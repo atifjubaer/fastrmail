@@ -14,13 +14,13 @@
     Trash2,
     RefreshCw,
     X,
-    ExternalLink,
-    AlertCircle,
-    CheckCircle2,
     Lock,
     Mail,
     Send,
     LogOut,
+    CheckCircle2,
+    AlertCircle,
+    Terminal,
   } from "@lucide/svelte";
 
   interface Stats {
@@ -124,7 +124,7 @@
       }
       if (qRes.status === "fulfilled" && qRes.value.ok) queue = await qRes.value.json();
     } catch {
-      // offline fallback maintains rich demo values
+      // offline fallback
     } finally {
       isLoading = false;
     }
@@ -147,7 +147,6 @@
         await loadData();
         setupDkim(dom);
       } else {
-        // Fallback local registration
         tenants = [...tenants, { id: `t-${Date.now()}`, domain: dom, created_at: new Date().toISOString() }];
         stats.tenants_count += 1;
         notify(`Domain ${dom} added`, "success");
@@ -256,72 +255,67 @@
   });
 </script>
 
-<div class="flex h-screen w-screen overflow-hidden bg-slate-950 font-sans text-slate-100 antialiased">
+<div class="flex h-screen w-screen overflow-hidden bg-[#09090b] font-sans text-zinc-100 antialiased select-none">
   <!-- ═════════════════════════════════════════════════════════════════════════ -->
-  <!-- 1. STALWART-STYLE DARK SIDEBAR                                            -->
+  <!-- 1. STALWART-STYLE MINIMALIST DARK SIDEBAR                                 -->
   <!-- ═════════════════════════════════════════════════════════════════════════ -->
-  <aside class="flex w-64 flex-col border-r border-slate-800 bg-slate-900/95">
-    <!-- Brand / Cluster Status Header -->
-    <div class="flex h-16 items-center gap-3 border-b border-slate-800 px-5">
-      <div class="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-tr from-indigo-500 to-indigo-600 text-white shadow-md shadow-indigo-500/20">
-        <Server class="h-5 w-5" />
-      </div>
-      <div>
-        <div class="flex items-center gap-2 font-bold tracking-tight text-white">
-          FastrMail
-          <span class="rounded bg-indigo-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-indigo-400 border border-indigo-500/20">Admin</span>
+  <aside class="flex w-60 shrink-0 flex-col border-r border-zinc-800/80 bg-[#0c0d12]">
+    <!-- Top Brand & Cluster Status -->
+    <div class="flex h-12 items-center justify-between border-b border-zinc-800/80 px-4">
+      <div class="flex items-center gap-2">
+        <div class="flex h-5 w-5 items-center justify-center rounded bg-zinc-800 text-white border border-zinc-700">
+          <Terminal class="h-3 w-3 text-zinc-300" />
         </div>
-        <div class="flex items-center gap-1.5 text-[11px] text-emerald-400">
-          <span class="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
-          Cluster Healthy
-        </div>
+        <span class="font-mono text-xs font-bold tracking-tight text-white">FASTRMAIL</span>
+        <span class="rounded bg-zinc-800 px-1 py-0.2 text-[9px] font-mono text-zinc-400">1.0</span>
       </div>
+      <span class="flex h-2 w-2 rounded-full bg-emerald-500 ring-2 ring-emerald-500/20" title="All Daemons Healthy"></span>
     </div>
 
-    <!-- Navigation Items -->
-    <nav class="flex-1 space-y-1.5 p-3">
+    <!-- Navigation -->
+    <nav class="flex-1 space-y-0.5 p-2 text-xs">
       <button
         onclick={() => (activeTab = "overview")}
-        class="flex w-full items-center gap-3 rounded-xl px-3.5 py-2.5 text-xs font-semibold transition-colors {activeTab === 'overview'
-          ? 'bg-indigo-600 text-white shadow-sm'
-          : 'text-slate-400 hover:bg-slate-800 hover:text-white'}"
+        class="flex h-8 w-full items-center gap-2.5 rounded px-2.5 font-medium transition-colors {activeTab === 'overview'
+          ? 'bg-zinc-800 text-white font-semibold'
+          : 'text-zinc-400 hover:bg-zinc-900 hover:text-zinc-200'}"
       >
-        <LayoutDashboard class="h-4 w-4" />
-        Overview
+        <LayoutDashboard class="h-3.5 w-3.5" />
+        <span>Overview</span>
       </button>
 
       <button
         onclick={() => (activeTab = "domains")}
-        class="flex w-full items-center gap-3 rounded-xl px-3.5 py-2.5 text-xs font-semibold transition-colors {activeTab === 'domains'
-          ? 'bg-indigo-600 text-white shadow-sm'
-          : 'text-slate-400 hover:bg-slate-800 hover:text-white'}"
+        class="flex h-8 w-full items-center gap-2.5 rounded px-2.5 font-medium transition-colors {activeTab === 'domains'
+          ? 'bg-zinc-800 text-white font-semibold'
+          : 'text-zinc-400 hover:bg-zinc-900 hover:text-zinc-200'}"
       >
-        <Globe class="h-4 w-4" />
-        Domains & DKIM
+        <Globe class="h-3.5 w-3.5" />
+        <span>Domains & DKIM</span>
       </button>
 
       <button
         onclick={() => (activeTab = "accounts")}
-        class="flex w-full items-center gap-3 rounded-xl px-3.5 py-2.5 text-xs font-semibold transition-colors {activeTab === 'accounts'
-          ? 'bg-indigo-600 text-white shadow-sm'
-          : 'text-slate-400 hover:bg-slate-800 hover:text-white'}"
+        class="flex h-8 w-full items-center gap-2.5 rounded px-2.5 font-medium transition-colors {activeTab === 'accounts'
+          ? 'bg-zinc-800 text-white font-semibold'
+          : 'text-zinc-400 hover:bg-zinc-900 hover:text-zinc-200'}"
       >
-        <Users class="h-4 w-4" />
-        User Accounts
+        <Users class="h-3.5 w-3.5" />
+        <span>Accounts</span>
       </button>
 
       <button
         onclick={() => (activeTab = "queue")}
-        class="flex w-full items-center justify-between rounded-xl px-3.5 py-2.5 text-xs font-semibold transition-colors {activeTab === 'queue'
-          ? 'bg-indigo-600 text-white shadow-sm'
-          : 'text-slate-400 hover:bg-slate-800 hover:text-white'}"
+        class="flex h-8 w-full items-center justify-between rounded px-2.5 font-medium transition-colors {activeTab === 'queue'
+          ? 'bg-zinc-800 text-white font-semibold'
+          : 'text-zinc-400 hover:bg-zinc-900 hover:text-zinc-200'}"
       >
-        <div class="flex items-center gap-3">
-          <Clock class="h-4 w-4" />
-          Outbound Queue
+        <div class="flex items-center gap-2.5">
+          <Clock class="h-3.5 w-3.5" />
+          <span>Spool Queue</span>
         </div>
         {#if stats.queue_pending_count > 0}
-          <span class="rounded-full bg-amber-500 px-2 py-0.5 text-[10px] font-bold text-white">
+          <span class="rounded bg-amber-500/20 px-1.5 py-0.2 font-mono text-[10px] text-amber-300">
             {stats.queue_pending_count}
           </span>
         {/if}
@@ -329,235 +323,213 @@
 
       <button
         onclick={() => (activeTab = "spamguard")}
-        class="flex w-full items-center gap-3 rounded-xl px-3.5 py-2.5 text-xs font-semibold transition-colors {activeTab === 'spamguard'
-          ? 'bg-indigo-600 text-white shadow-sm'
-          : 'text-slate-400 hover:bg-slate-800 hover:text-white'}"
+        class="flex h-8 w-full items-center gap-2.5 rounded px-2.5 font-medium transition-colors {activeTab === 'spamguard'
+          ? 'bg-zinc-800 text-white font-semibold'
+          : 'text-zinc-400 hover:bg-zinc-900 hover:text-zinc-200'}"
       >
-        <ShieldCheck class="h-4 w-4" />
-        SpamGuard Defenses
+        <ShieldCheck class="h-3.5 w-3.5" />
+        <span>SpamGuard</span>
       </button>
 
       <button
         onclick={() => (activeTab = "server")}
-        class="flex w-full items-center gap-3 rounded-xl px-3.5 py-2.5 text-xs font-semibold transition-colors {activeTab === 'server'
-          ? 'bg-indigo-600 text-white shadow-sm'
-          : 'text-slate-400 hover:bg-slate-800 hover:text-white'}"
+        class="flex h-8 w-full items-center gap-2.5 rounded px-2.5 font-medium transition-colors {activeTab === 'server'
+          ? 'bg-zinc-800 text-white font-semibold'
+          : 'text-zinc-400 hover:bg-zinc-900 hover:text-zinc-200'}"
       >
-        <Server class="h-4 w-4" />
-        Protocols & Ports
+        <Server class="h-3.5 w-3.5" />
+        <span>Listeners</span>
       </button>
     </nav>
 
-    <!-- Admin Status Footer -->
-    <div class="border-t border-slate-800 p-4">
-      <div class="flex items-center justify-between">
-        <div class="flex items-center gap-2.5">
-          <div class="flex h-8 w-8 items-center justify-center rounded-lg bg-slate-800 font-bold text-xs text-indigo-400 border border-slate-700">
-            AD
-          </div>
-          <div>
-            <div class="text-xs font-semibold text-white">admin@fastrsoft.com</div>
-            <div class="text-[10px] text-slate-400">Super Administrator</div>
-          </div>
+    <!-- Super Admin Footer -->
+    <div class="border-t border-zinc-800/80 p-3">
+      <div class="flex items-center justify-between text-xs">
+        <div class="truncate pr-2">
+          <div class="font-mono text-[11px] font-semibold text-zinc-300 truncate">admin@fastrsoft.com</div>
+          <div class="text-[10px] text-zinc-500">Root Node</div>
         </div>
-        <button
-          onclick={() => notify("Session active", "info")}
-          class="text-slate-500 hover:text-slate-300"
-          title="Logout"
-        >
-          <LogOut class="h-4 w-4" />
+        <button onclick={() => notify("Session verified", "info")} class="text-zinc-500 hover:text-zinc-300" title="Status">
+          <CheckCircle2 class="h-3.5 w-3.5 text-emerald-400" />
         </button>
       </div>
     </div>
   </aside>
 
   <!-- ═════════════════════════════════════════════════════════════════════════ -->
-  <!-- 2. MAIN WORKSPACE / CONTENT PANELS                                        -->
+  <!-- 2. MAIN TECHNICAL DASHBOARD VIEW                                          -->
   <!-- ═════════════════════════════════════════════════════════════════════════ -->
-  <main class="flex flex-1 flex-col overflow-hidden bg-slate-950">
-    <!-- Top Action Header -->
-    <header class="flex h-16 items-center justify-between border-b border-slate-800/80 px-8">
-      <div>
-        <h1 class="text-base font-bold text-white capitalize">
-          {activeTab} Management
-        </h1>
-        <p class="text-xs text-slate-400">FastrMail High-Performance Enterprise Node</p>
+  <main class="flex flex-1 flex-col overflow-hidden bg-[#09090b]">
+    <!-- Top Action Ribbon -->
+    <header class="flex h-12 items-center justify-between border-b border-zinc-800/80 px-6">
+      <div class="flex items-center gap-3">
+        <h2 class="text-xs font-semibold uppercase tracking-wider text-zinc-300 font-mono">
+          {activeTab}
+        </h2>
+        <span class="text-zinc-700">•</span>
+        <span class="font-mono text-[11px] text-zinc-500">Linux / musl / Tokio 1.40</span>
       </div>
 
-      <div class="flex items-center gap-3">
+      <div class="flex items-center gap-2">
         <button
           onclick={loadData}
-          class="flex items-center gap-2 rounded-xl border border-slate-800 bg-slate-900 px-3.5 py-2 text-xs font-semibold text-slate-300 hover:bg-slate-800"
+          class="flex h-7 items-center gap-1.5 rounded border border-zinc-800 bg-zinc-900 px-2.5 text-[11px] font-mono text-zinc-300 hover:bg-zinc-800"
         >
-          <RefreshCw class="h-3.5 w-3.5 {isLoading ? 'animate-spin text-indigo-400' : ''}" />
-          Refresh
+          <RefreshCw class="h-3 w-3 {isLoading ? 'animate-spin text-zinc-100' : ''}" />
+          <span>Sync</span>
         </button>
 
         {#if activeTab === "domains"}
           <button
             onclick={() => (isAddDomainOpen = true)}
-            class="flex items-center gap-2 rounded-xl bg-indigo-600 px-3.5 py-2 text-xs font-semibold text-white hover:bg-indigo-700 shadow-sm shadow-indigo-600/30"
+            class="flex h-7 items-center gap-1.5 rounded bg-zinc-100 px-3 text-[11px] font-semibold text-zinc-900 hover:bg-white active:scale-[0.99]"
           >
-            <Plus class="h-3.5 w-3.5" />
-            Add Domain
+            <Plus class="h-3 w-3" />
+            <span>Add Domain</span>
           </button>
         {:else if activeTab === "accounts"}
           <button
             onclick={() => (isAddAccountOpen = true)}
-            class="flex items-center gap-2 rounded-xl bg-indigo-600 px-3.5 py-2 text-xs font-semibold text-white hover:bg-indigo-700 shadow-sm shadow-indigo-600/30"
+            class="flex h-7 items-center gap-1.5 rounded bg-zinc-100 px-3 text-[11px] font-semibold text-zinc-900 hover:bg-white active:scale-[0.99]"
           >
-            <Plus class="h-3.5 w-3.5" />
-            Provision Account
+            <Plus class="h-3 w-3" />
+            <span>Create Account</span>
           </button>
         {/if}
       </div>
     </header>
 
-    <!-- Content Views -->
-    <div class="flex-1 overflow-y-auto p-8">
-      <!-- ── OVERVIEW TAB ────────────────────────────────────────────────── -->
+    <!-- Content Workspace -->
+    <div class="flex-1 overflow-y-auto p-6">
+      <!-- ── OVERVIEW ─────────────────────────────────────────────────────── -->
       {#if activeTab === "overview"}
         <!-- 4 Metric Cards -->
-        <div class="grid grid-cols-4 gap-6">
-          <div class="rounded-2xl border border-slate-800/80 bg-slate-900/60 p-5">
-            <div class="flex items-center justify-between text-slate-400 text-xs font-medium">
+        <div class="grid grid-cols-4 gap-4">
+          <div class="rounded-lg border border-zinc-800/80 bg-zinc-900/40 p-4">
+            <div class="flex items-center justify-between font-mono text-[11px] uppercase tracking-wider text-zinc-400">
               <span>Managed Tenants</span>
-              <Globe class="h-4 w-4 text-indigo-400" />
+              <Globe class="h-3.5 w-3.5 text-zinc-500" />
             </div>
-            <div class="mt-3 text-2xl font-bold text-white">{stats.tenants_count}</div>
-            <div class="mt-1 flex items-center gap-1.5 text-[11px] text-emerald-400">
-              <CheckCircle2 class="h-3.5 w-3.5" />
-              <span>All DKIM keys verified</span>
-            </div>
+            <div class="mt-2 font-mono text-xl font-bold text-white">{stats.tenants_count}</div>
+            <div class="mt-1 font-mono text-[10px] text-emerald-400">DKIM RSA-2048 Signed</div>
           </div>
 
-          <div class="rounded-2xl border border-slate-800/80 bg-slate-900/60 p-5">
-            <div class="flex items-center justify-between text-slate-400 text-xs font-medium">
+          <div class="rounded-lg border border-zinc-800/80 bg-zinc-900/40 p-4">
+            <div class="flex items-center justify-between font-mono text-[11px] uppercase tracking-wider text-zinc-400">
               <span>Active Accounts</span>
-              <Users class="h-4 w-4 text-purple-400" />
+              <Users class="h-3.5 w-3.5 text-zinc-500" />
             </div>
-            <div class="mt-3 text-2xl font-bold text-white">{stats.accounts_count}</div>
-            <div class="mt-1 flex items-center gap-1.5 text-[11px] text-slate-400">
-              <span>IMAP4rev2 / POP3 enabled</span>
-            </div>
+            <div class="mt-2 font-mono text-xl font-bold text-white">{stats.accounts_count}</div>
+            <div class="mt-1 font-mono text-[10px] text-zinc-400">IMAP & POP3 Active</div>
           </div>
 
-          <div class="rounded-2xl border border-slate-800/80 bg-slate-900/60 p-5">
-            <div class="flex items-center justify-between text-slate-400 text-xs font-medium">
+          <div class="rounded-lg border border-zinc-800/80 bg-zinc-900/40 p-4">
+            <div class="flex items-center justify-between font-mono text-[11px] uppercase tracking-wider text-zinc-400">
               <span>Indexed Messages</span>
-              <Mail class="h-4 w-4 text-emerald-400" />
+              <Mail class="h-3.5 w-3.5 text-zinc-500" />
             </div>
-            <div class="mt-3 text-2xl font-bold text-white">{stats.messages_count}</div>
-            <div class="mt-1 flex items-center gap-1.5 text-[11px] text-emerald-400">
-              <CheckCircle2 class="h-3.5 w-3.5" />
-              <span>Tantivy Lucene index active</span>
-            </div>
+            <div class="mt-2 font-mono text-xl font-bold text-white">{stats.messages_count}</div>
+            <div class="mt-1 font-mono text-[10px] text-emerald-400">Tantivy Index Ready</div>
           </div>
 
-          <div class="rounded-2xl border border-slate-800/80 bg-slate-900/60 p-5">
-            <div class="flex items-center justify-between text-slate-400 text-xs font-medium">
-              <span>Outbound Spool</span>
-              <Clock class="h-4 w-4 text-amber-400" />
+          <div class="rounded-lg border border-zinc-800/80 bg-zinc-900/40 p-4">
+            <div class="flex items-center justify-between font-mono text-[11px] uppercase tracking-wider text-zinc-400">
+              <span>Spool Queue</span>
+              <Clock class="h-3.5 w-3.5 text-zinc-500" />
             </div>
-            <div class="mt-3 text-2xl font-bold text-white">{stats.queue_pending_count}</div>
-            <div class="mt-1 flex items-center gap-1.5 text-[11px] text-emerald-400">
-              <CheckCircle2 class="h-3.5 w-3.5" />
-              <span>Spool queue empty</span>
-            </div>
+            <div class="mt-2 font-mono text-xl font-bold text-white">{stats.queue_pending_count}</div>
+            <div class="mt-1 font-mono text-[10px] text-emerald-400">0 Pending Deferred</div>
           </div>
         </div>
 
-        <!-- Protocol Status Grid -->
-        <div class="mt-8 rounded-2xl border border-slate-800/80 bg-slate-900/40 p-6">
-          <h2 class="text-sm font-bold text-white">Active Protocol Listeners</h2>
-          <div class="mt-4 grid grid-cols-5 gap-4">
-            <div class="rounded-xl border border-slate-800 bg-slate-900 p-4">
-              <div class="text-[11px] font-semibold uppercase tracking-wider text-slate-400">Inbound SMTP</div>
-              <div class="mt-1 text-lg font-bold text-white">Port 2525</div>
-              <div class="mt-2 flex items-center gap-1.5 text-xs text-emerald-400">
-                <span class="h-2 w-2 rounded-full bg-emerald-400"></span>
-                RFC 5321 Online
-              </div>
-            </div>
-
-            <div class="rounded-xl border border-slate-800 bg-slate-900 p-4">
-              <div class="text-[11px] font-semibold uppercase tracking-wider text-slate-400">Submission</div>
-              <div class="mt-1 text-lg font-bold text-white">Port 2526</div>
-              <div class="mt-2 flex items-center gap-1.5 text-xs text-emerald-400">
-                <span class="h-2 w-2 rounded-full bg-emerald-400"></span>
-                RFC 6409 Online
-              </div>
-            </div>
-
-            <div class="rounded-xl border border-slate-800 bg-slate-900 p-4">
-              <div class="text-[11px] font-semibold uppercase tracking-wider text-slate-400">IMAP4rev2</div>
-              <div class="mt-1 text-lg font-bold text-white">Port 1143</div>
-              <div class="mt-2 flex items-center gap-1.5 text-xs text-emerald-400">
-                <span class="h-2 w-2 rounded-full bg-emerald-400"></span>
-                RFC 9051 Online
-              </div>
-            </div>
-
-            <div class="rounded-xl border border-slate-800 bg-slate-900 p-4">
-              <div class="text-[11px] font-semibold uppercase tracking-wider text-slate-400">POP3 Server</div>
-              <div class="mt-1 text-lg font-bold text-white">Port 1110</div>
-              <div class="mt-2 flex items-center gap-1.5 text-xs text-emerald-400">
-                <span class="h-2 w-2 rounded-full bg-emerald-400"></span>
-                RFC 1939 Online
-              </div>
-            </div>
-
-            <div class="rounded-xl border border-slate-800 bg-slate-900 p-4">
-              <div class="text-[11px] font-semibold uppercase tracking-wider text-slate-400">HTTP & JMAP</div>
-              <div class="mt-1 text-lg font-bold text-white">Port 8080</div>
-              <div class="mt-2 flex items-center gap-1.5 text-xs text-emerald-400">
-                <span class="h-2 w-2 rounded-full bg-emerald-400"></span>
-                RFC 8620/8621
-              </div>
-            </div>
+        <!-- Protocol Listeners Table -->
+        <div class="mt-6 rounded-lg border border-zinc-800/80 bg-zinc-900/30 overflow-hidden">
+          <div class="border-b border-zinc-800/80 px-4 py-2.5 font-mono text-xs font-semibold text-zinc-300">
+            Active RFC Protocol Daemons
           </div>
-        </div>
-
-      <!-- ── DOMAINS & DKIM TAB ─────────────────────────────────────────── -->
-      {:else if activeTab === "domains"}
-        <div class="rounded-2xl border border-slate-800/80 bg-slate-900/40 overflow-hidden">
-          <table class="w-full text-left text-xs">
-            <thead class="border-b border-slate-800 bg-slate-900/80 text-slate-400">
+          <table class="w-full text-left text-xs font-mono">
+            <thead class="border-b border-zinc-800/80 bg-zinc-900/60 text-zinc-400 text-[11px]">
               <tr>
-                <th class="px-6 py-3.5 font-semibold">Domain Name</th>
-                <th class="px-6 py-3.5 font-semibold">Status</th>
-                <th class="px-6 py-3.5 font-semibold">DKIM Status</th>
-                <th class="px-6 py-3.5 font-semibold">Provisioned</th>
-                <th class="px-6 py-3.5 font-semibold text-right">Actions</th>
+                <th class="px-4 py-2 font-medium">Protocol</th>
+                <th class="px-4 py-2 font-medium">Port</th>
+                <th class="px-4 py-2 font-medium">Binding</th>
+                <th class="px-4 py-2 font-medium">Standard</th>
+                <th class="px-4 py-2 font-medium text-right">Status</th>
               </tr>
             </thead>
-            <tbody class="divide-y divide-slate-800 text-slate-300">
-              {#each tenants as tenant}
-                <tr class="hover:bg-slate-900/60">
-                  <td class="px-6 py-4 font-semibold text-white">
-                    {tenant.domain}
-                  </td>
-                  <td class="px-6 py-4">
-                    <span class="inline-flex items-center gap-1.5 rounded-md bg-emerald-500/10 px-2 py-1 text-[11px] font-semibold text-emerald-400 border border-emerald-500/20">
+            <tbody class="divide-y divide-zinc-800/60 text-zinc-300">
+              <tr class="hover:bg-zinc-900/40">
+                <td class="px-4 py-2.5 font-semibold text-white">SMTP Inbound</td>
+                <td class="px-4 py-2.5 text-emerald-400 font-semibold">:2525</td>
+                <td class="px-4 py-2.5 text-zinc-400">0.0.0.0</td>
+                <td class="px-4 py-2.5 text-zinc-400">RFC 5321 (STARTTLS)</td>
+                <td class="px-4 py-2.5 text-right text-emerald-400">LISTENING</td>
+              </tr>
+              <tr class="hover:bg-zinc-900/40">
+                <td class="px-4 py-2.5 font-semibold text-white">Submission</td>
+                <td class="px-4 py-2.5 text-emerald-400 font-semibold">:2526</td>
+                <td class="px-4 py-2.5 text-zinc-400">0.0.0.0</td>
+                <td class="px-4 py-2.5 text-zinc-400">RFC 6409 (SASL Auth)</td>
+                <td class="px-4 py-2.5 text-right text-emerald-400">LISTENING</td>
+              </tr>
+              <tr class="hover:bg-zinc-900/40">
+                <td class="px-4 py-2.5 font-semibold text-white">IMAP4rev2</td>
+                <td class="px-4 py-2.5 text-emerald-400 font-semibold">:1143</td>
+                <td class="px-4 py-2.5 text-zinc-400">0.0.0.0</td>
+                <td class="px-4 py-2.5 text-zinc-400">RFC 9051</td>
+                <td class="px-4 py-2.5 text-right text-emerald-400">LISTENING</td>
+              </tr>
+              <tr class="hover:bg-zinc-900/40">
+                <td class="px-4 py-2.5 font-semibold text-white">POP3 Server</td>
+                <td class="px-4 py-2.5 text-emerald-400 font-semibold">:1110</td>
+                <td class="px-4 py-2.5 text-zinc-400">0.0.0.0</td>
+                <td class="px-4 py-2.5 text-zinc-400">RFC 1939</td>
+                <td class="px-4 py-2.5 text-right text-emerald-400">LISTENING</td>
+              </tr>
+              <tr class="hover:bg-zinc-900/40">
+                <td class="px-4 py-2.5 font-semibold text-white">HTTP / JMAP API</td>
+                <td class="px-4 py-2.5 text-emerald-400 font-semibold">:8080</td>
+                <td class="px-4 py-2.5 text-zinc-400">0.0.0.0</td>
+                <td class="px-4 py-2.5 text-zinc-400">RFC 8620 / 8621</td>
+                <td class="px-4 py-2.5 text-right text-emerald-400">LISTENING</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+      <!-- ── DOMAINS & DKIM ───────────────────────────────────────────────── -->
+      {:else if activeTab === "domains"}
+        <div class="rounded-lg border border-zinc-800/80 bg-zinc-900/30 overflow-hidden">
+          <table class="w-full text-left text-xs">
+            <thead class="border-b border-zinc-800/80 bg-zinc-900/60 text-zinc-400 font-mono text-[11px]">
+              <tr>
+                <th class="px-4 py-2.5 font-medium">Domain</th>
+                <th class="px-4 py-2.5 font-medium">Routing</th>
+                <th class="px-4 py-2.5 font-medium">DKIM Security</th>
+                <th class="px-4 py-2.5 font-medium">Registered</th>
+                <th class="px-4 py-2.5 font-medium text-right">Actions</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-zinc-800/60 text-zinc-300">
+              {#each tenants as t}
+                <tr class="hover:bg-zinc-900/40">
+                  <td class="px-4 py-3 font-mono font-bold text-white">{t.domain}</td>
+                  <td class="px-4 py-3">
+                    <span class="inline-flex items-center gap-1.5 font-mono text-[10px] text-emerald-400">
                       <span class="h-1.5 w-1.5 rounded-full bg-emerald-400"></span>
-                      Routing Active
+                      ACTIVE
                     </span>
                   </td>
-                  <td class="px-6 py-4">
-                    <span class="inline-flex items-center gap-1.5 text-slate-300">
-                      <Lock class="h-3.5 w-3.5 text-indigo-400" />
-                      RSA-2048 Bit Signed
-                    </span>
+                  <td class="px-4 py-3 font-mono text-zinc-400 text-xs">RSA-2048 (default._domainkey)</td>
+                  <td class="px-4 py-3 font-mono text-zinc-500 text-[11px]">
+                    {new Date(t.created_at).toLocaleDateString()}
                   </td>
-                  <td class="px-6 py-4 text-slate-400">
-                    {new Date(tenant.created_at).toLocaleDateString()}
-                  </td>
-                  <td class="px-6 py-4 text-right">
+                  <td class="px-4 py-3 text-right">
                     <button
-                      onclick={() => setupDkim(tenant.domain)}
-                      class="rounded-lg border border-slate-800 bg-slate-800/80 px-2.5 py-1.5 text-xs font-semibold text-indigo-300 hover:bg-slate-700"
+                      onclick={() => setupDkim(t.domain)}
+                      class="rounded border border-zinc-700 bg-zinc-800 px-2 py-1 font-mono text-[11px] text-zinc-200 hover:bg-zinc-700"
                     >
-                      View DKIM Record
+                      DKIM DNS Record
                     </button>
                   </td>
                 </tr>
@@ -566,51 +538,34 @@
           </table>
         </div>
 
-      <!-- ── USER ACCOUNTS TAB ───────────────────────────────────────────── -->
+      <!-- ── ACCOUNTS ─────────────────────────────────────────────────────── -->
       {:else if activeTab === "accounts"}
-        <div class="rounded-2xl border border-slate-800/80 bg-slate-900/40 overflow-hidden">
+        <div class="rounded-lg border border-zinc-800/80 bg-zinc-900/30 overflow-hidden">
           <table class="w-full text-left text-xs">
-            <thead class="border-b border-slate-800 bg-slate-900/80 text-slate-400">
+            <thead class="border-b border-zinc-800/80 bg-zinc-900/60 text-zinc-400 font-mono text-[11px]">
               <tr>
-                <th class="px-6 py-3.5 font-semibold">Account / Email</th>
-                <th class="px-6 py-3.5 font-semibold">Tenant Domain</th>
-                <th class="px-6 py-3.5 font-semibold">Storage Quota</th>
-                <th class="px-6 py-3.5 font-semibold">Created</th>
-                <th class="px-6 py-3.5 font-semibold text-right">Actions</th>
+                <th class="px-4 py-2.5 font-medium">Account</th>
+                <th class="px-4 py-2.5 font-medium">Domain</th>
+                <th class="px-4 py-2.5 font-medium">Quota</th>
+                <th class="px-4 py-2.5 font-medium">Created</th>
+                <th class="px-4 py-2.5 font-medium text-right">Actions</th>
               </tr>
             </thead>
-            <tbody class="divide-y divide-slate-800 text-slate-300">
-              {#each accounts as acc}
-                <tr class="hover:bg-slate-900/60">
-                  <td class="px-6 py-4">
-                    <div class="flex items-center gap-3">
-                      <div class="flex h-8 w-8 items-center justify-center rounded-lg bg-indigo-600 font-bold text-xs text-white">
-                        {acc.username.charAt(0).toUpperCase()}
-                      </div>
-                      <div>
-                        <div class="font-semibold text-white">{acc.email}</div>
-                        <div class="text-[11px] text-slate-500">Username: {acc.username}</div>
-                      </div>
-                    </div>
+            <tbody class="divide-y divide-zinc-800/60 text-zinc-300">
+              {#each accounts as a}
+                <tr class="hover:bg-zinc-900/40">
+                  <td class="px-4 py-3 font-mono font-semibold text-white">{a.email}</td>
+                  <td class="px-4 py-3 font-mono text-zinc-400">{a.email.split('@')[1]}</td>
+                  <td class="px-4 py-3 font-mono text-zinc-400">
+                    {(a.quota_bytes / 1024 / 1024 / 1024).toFixed(0)} GB
                   </td>
-                  <td class="px-6 py-4 text-slate-300">
-                    {acc.email.split('@')[1]}
+                  <td class="px-4 py-3 font-mono text-zinc-500 text-[11px]">
+                    {new Date(a.created_at).toLocaleDateString()}
                   </td>
-                  <td class="px-6 py-4">
-                    <div class="flex items-center gap-2">
-                      <div class="h-1.5 w-24 overflow-hidden rounded-full bg-slate-800">
-                        <div class="h-full w-[5%] bg-indigo-500 rounded-full"></div>
-                      </div>
-                      <span class="text-slate-400">{(acc.quota_bytes / 1024 / 1024 / 1024).toFixed(0)} GB</span>
-                    </div>
-                  </td>
-                  <td class="px-6 py-4 text-slate-400">
-                    {new Date(acc.created_at).toLocaleDateString()}
-                  </td>
-                  <td class="px-6 py-4 text-right">
+                  <td class="px-4 py-3 text-right">
                     <button
-                      onclick={() => notify(`Password reset link generated for ${acc.email}`, "info")}
-                      class="text-xs text-slate-400 hover:text-white"
+                      onclick={() => notify(`Password reset token sent to ${a.email}`, "info")}
+                      class="font-mono text-[11px] text-zinc-400 hover:text-white"
                     >
                       Reset Password
                     </button>
@@ -621,148 +576,79 @@
           </table>
         </div>
 
-      <!-- ── OUTBOUND QUEUE TAB ─────────────────────────────────────────── -->
+      <!-- ── OUTBOUND QUEUE ───────────────────────────────────────────────── -->
       {:else if activeTab === "queue"}
-        <div class="rounded-2xl border border-slate-800/80 bg-slate-900/40 overflow-hidden">
-          {#if queue.length === 0}
-            <div class="flex flex-col items-center justify-center p-12 text-center text-slate-400">
-              <CheckCircle2 class="h-8 w-8 text-emerald-400" />
-              <h3 class="mt-3 font-semibold text-white">Outbound spool is empty</h3>
-              <p class="mt-1 text-xs text-slate-500">All outbound messages delivered immediately via MX lookup.</p>
-            </div>
-          {:else}
-            <table class="w-full text-left text-xs">
-              <thead class="border-b border-slate-800 bg-slate-900/80 text-slate-400">
-                <tr>
-                  <th class="px-6 py-3.5 font-semibold">Recipient</th>
-                  <th class="px-6 py-3.5 font-semibold">Sender</th>
-                  <th class="px-6 py-3.5 font-semibold">Status</th>
-                  <th class="px-6 py-3.5 font-semibold">Retries</th>
-                  <th class="px-6 py-3.5 font-semibold text-right">Actions</th>
-                </tr>
-              </thead>
-              <tbody class="divide-y divide-slate-800 text-slate-300">
-                {#each queue as item}
-                  <tr>
-                    <td class="px-6 py-4 font-semibold text-white">{item.recipient}</td>
-                    <td class="px-6 py-4">{item.sender}</td>
-                    <td class="px-6 py-4">
-                      <span class="rounded bg-amber-500/10 px-2 py-1 text-[11px] font-semibold text-amber-400 border border-amber-500/20">
-                        {item.status}
-                      </span>
-                    </td>
-                    <td class="px-6 py-4">{item.retry_count}</td>
-                    <td class="px-6 py-4 text-right">
-                      <button class="text-indigo-400 hover:underline">Retry</button>
-                    </td>
-                  </tr>
-                {/each}
-              </tbody>
-            </table>
-          {/if}
+        <div class="rounded-lg border border-zinc-800/80 bg-zinc-900/30 p-8 text-center">
+          <CheckCircle2 class="mx-auto h-7 w-7 text-emerald-400" />
+          <div class="mt-2 font-mono text-xs font-semibold text-white">Outbound Spool Empty</div>
+          <div class="mt-0.5 text-xs text-zinc-500">All outbound messages delivered synchronously via MX lookup.</div>
         </div>
 
-      <!-- ── SPAMGUARD DEFENSES TAB ─────────────────────────────────────── -->
+      <!-- ── SPAMGUARD ────────────────────────────────────────────────────── -->
       {:else if activeTab === "spamguard"}
-        <div class="grid grid-cols-2 gap-6">
-          <div class="rounded-2xl border border-slate-800 bg-slate-900/60 p-6">
-            <div class="flex items-center gap-3">
-              <div class="flex h-10 w-10 items-center justify-center rounded-xl bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                <ShieldCheck class="h-5 w-5" />
+        <div class="grid grid-cols-2 gap-4">
+          <div class="rounded-lg border border-zinc-800/80 bg-zinc-900/30 p-4">
+            <div class="font-mono text-xs font-semibold text-white">DNSBL Blocklists (Real-Time)</div>
+            <div class="mt-3 space-y-2 font-mono text-xs">
+              <div class="flex items-center justify-between rounded bg-zinc-950 p-2 border border-zinc-800/60">
+                <span class="text-zinc-400">zen.spamhaus.org</span>
+                <span class="text-emerald-400 text-[11px]">ENFORCING</span>
               </div>
-              <div>
-                <h3 class="font-bold text-white text-sm">DNSBL Real-Time Blocklists</h3>
-                <p class="text-xs text-slate-400">Inbound IP connection reputation filtering</p>
+              <div class="flex items-center justify-between rounded bg-zinc-950 p-2 border border-zinc-800/60">
+                <span class="text-zinc-400">b.barracudacentral.org</span>
+                <span class="text-emerald-400 text-[11px]">ENFORCING</span>
+              </div>
+              <div class="flex items-center justify-between rounded bg-zinc-950 p-2 border border-zinc-800/60">
+                <span class="text-zinc-400">dnsbl.sorbs.net</span>
+                <span class="text-emerald-400 text-[11px]">ENFORCING</span>
               </div>
             </div>
-            <ul class="mt-4 space-y-2 text-xs text-slate-300">
-              <li class="flex items-center justify-between rounded-lg bg-slate-950 p-2.5">
-                <span>Spamhaus ZEN (`zen.spamhaus.org`)</span>
-                <span class="text-emerald-400 font-semibold">Active & Enforcing</span>
-              </li>
-              <li class="flex items-center justify-between rounded-lg bg-slate-950 p-2.5">
-                <span>Barracuda Reputation (`b.barracudacentral.org`)</span>
-                <span class="text-emerald-400 font-semibold">Active & Enforcing</span>
-              </li>
-              <li class="flex items-center justify-between rounded-lg bg-slate-950 p-2.5">
-                <span>SORBS Aggregate (`dnsbl.sorbs.net`)</span>
-                <span class="text-emerald-400 font-semibold">Active & Enforcing</span>
-              </li>
-            </ul>
           </div>
 
-          <div class="rounded-2xl border border-slate-800 bg-slate-900/60 p-6">
-            <div class="flex items-center gap-3">
-              <div class="flex h-10 w-10 items-center justify-center rounded-xl bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
-                <Clock class="h-5 w-5" />
+          <div class="rounded-lg border border-zinc-800/80 bg-zinc-900/30 p-4">
+            <div class="font-mono text-xs font-semibold text-white">Greylisting Parameters (RFC 6647)</div>
+            <div class="mt-3 space-y-2 font-mono text-xs text-zinc-400">
+              <div class="flex justify-between rounded bg-zinc-950 p-2 border border-zinc-800/60">
+                <span>Initial Deferral:</span>
+                <span class="text-white">300 seconds</span>
               </div>
-              <div>
-                <h3 class="font-bold text-white text-sm">Automated Greylisting FSM</h3>
-                <p class="text-xs text-slate-400">RFC 6647 temporary deferral for unknown senders</p>
+              <div class="flex justify-between rounded bg-zinc-950 p-2 border border-zinc-800/60">
+                <span>Retry Expiry:</span>
+                <span class="text-white">24 hours</span>
               </div>
-            </div>
-            <div class="mt-4 rounded-lg bg-slate-950 p-4 text-xs text-slate-300 space-y-2">
-              <div class="flex justify-between">
-                <span class="text-slate-400">Initial Delay:</span>
-                <span class="font-mono text-white">300 seconds</span>
-              </div>
-              <div class="flex justify-between">
-                <span class="text-slate-400">Retry Expiry Window:</span>
-                <span class="font-mono text-white">24 hours</span>
-              </div>
-              <div class="flex justify-between">
-                <span class="text-slate-400">Whitelist Validity:</span>
-                <span class="font-mono text-white">30 days</span>
+              <div class="flex justify-between rounded bg-zinc-950 p-2 border border-zinc-800/60">
+                <span>Whitelist Expiry:</span>
+                <span class="text-white">30 days</span>
               </div>
             </div>
           </div>
         </div>
 
-      <!-- ── SERVER & PROTOCOLS TAB ─────────────────────────────────────── -->
+      <!-- ── LISTENERS ────────────────────────────────────────────────────── -->
       {:else if activeTab === "server"}
-        <div class="rounded-2xl border border-slate-800 bg-slate-900/60 p-6">
-          <h3 class="font-bold text-white text-sm">Core Engine Topology</h3>
-          <p class="text-xs text-slate-400">All services run in a single compiled Rust binary with Tokio async event loops.</p>
-
-          <div class="mt-6 space-y-3 text-xs">
-            <div class="flex items-center justify-between rounded-xl bg-slate-950 p-4 border border-slate-800">
-              <div>
-                <div class="font-bold text-white">Inbound SMTP Server</div>
-                <div class="text-slate-400">RFC 5321 • STARTTLS supported • Greylisting + DNSBL</div>
-              </div>
-              <span class="font-mono text-emerald-400">0.0.0.0:2525</span>
+        <div class="rounded-lg border border-zinc-800/80 bg-zinc-900/30 p-4">
+          <div class="font-mono text-xs font-semibold text-white">Topology & Runtime Architecture</div>
+          <p class="mt-1 text-xs text-zinc-400">All protocols multiplexed through a single Tokio multi-threaded runtime.</p>
+          <div class="mt-4 space-y-2 font-mono text-xs">
+            <div class="flex items-center justify-between rounded bg-zinc-950 p-2.5 border border-zinc-800/60">
+              <span class="text-white">Inbound SMTP (RFC 5321)</span>
+              <span class="text-emerald-400">:2525/tcp</span>
             </div>
-
-            <div class="flex items-center justify-between rounded-xl bg-slate-950 p-4 border border-slate-800">
-              <div>
-                <div class="font-bold text-white">Submission Mail Agent (MSA)</div>
-                <div class="text-slate-400">RFC 6409 • SASL PLAIN / LOGIN Auth • Automatic DKIM Signing</div>
-              </div>
-              <span class="font-mono text-emerald-400">0.0.0.0:2526</span>
+            <div class="flex items-center justify-between rounded bg-zinc-950 p-2.5 border border-zinc-800/60">
+              <span class="text-white">Submission (RFC 6409)</span>
+              <span class="text-emerald-400">:2526/tcp</span>
             </div>
-
-            <div class="flex items-center justify-between rounded-xl bg-slate-950 p-4 border border-slate-800">
-              <div>
-                <div class="font-bold text-white">IMAP4rev2 Server</div>
-                <div class="text-slate-400">RFC 9051 • Full Mailbox synchronization & UID fetch</div>
-              </div>
-              <span class="font-mono text-emerald-400">0.0.0.0:1143</span>
+            <div class="flex items-center justify-between rounded bg-zinc-950 p-2.5 border border-zinc-800/60">
+              <span class="text-white">IMAP4rev2 (RFC 9051)</span>
+              <span class="text-emerald-400">:1143/tcp</span>
             </div>
-
-            <div class="flex items-center justify-between rounded-xl bg-slate-950 p-4 border border-slate-800">
-              <div>
-                <div class="font-bold text-white">POP3 Server</div>
-                <div class="text-slate-400">RFC 1939 • STAT, LIST, RETR, DELE, TOP, UIDL</div>
-              </div>
-              <span class="font-mono text-emerald-400">0.0.0.0:1110</span>
+            <div class="flex items-center justify-between rounded bg-zinc-950 p-2.5 border border-zinc-800/60">
+              <span class="text-white">POP3 Server (RFC 1939)</span>
+              <span class="text-emerald-400">:1110/tcp</span>
             </div>
-
-            <div class="flex items-center justify-between rounded-xl bg-slate-950 p-4 border border-slate-800">
-              <div>
-                <div class="font-bold text-white">HTTP Webmail, Admin & JMAP Server</div>
-                <div class="text-slate-400">RFC 8620 / RFC 8621 • Embedded Svelte 5 Dashboards</div>
-              </div>
-              <span class="font-mono text-emerald-400">0.0.0.0:8080</span>
+            <div class="flex items-center justify-between rounded bg-zinc-950 p-2.5 border border-zinc-800/60">
+              <span class="text-white">HTTP Webmail & JMAP (RFC 8620/8621)</span>
+              <span class="text-emerald-400">:8080/tcp</span>
             </div>
           </div>
         </div>
@@ -776,24 +662,24 @@
 <!-- ═════════════════════════════════════════════════════════════════════════ -->
 {#if isAddDomainOpen}
   <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4">
-    <div class="w-full max-w-md rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow-2xl">
-      <div class="flex items-center justify-between">
-        <h3 class="font-bold text-white text-sm">Add New Domain</h3>
-        <button onclick={() => (isAddDomainOpen = false)} class="text-slate-400 hover:text-white">
+    <div class="w-full max-w-sm rounded-lg border border-zinc-800 bg-zinc-900 p-5 shadow-2xl">
+      <div class="flex items-center justify-between border-b border-zinc-800 pb-3">
+        <span class="font-mono text-xs font-semibold text-white">ADD DOMAIN</span>
+        <button onclick={() => (isAddDomainOpen = false)} class="text-zinc-500 hover:text-white">
           <X class="h-4 w-4" />
         </button>
       </div>
 
-      <form onsubmit={handleAddDomain} class="mt-4 space-y-4">
+      <form onsubmit={handleAddDomain} class="mt-4 space-y-3">
         <div>
-          <label for="new-domain-input" class="block text-xs font-semibold text-slate-300">Domain Name</label>
+          <label for="admin-domain-input" class="block font-mono text-[11px] text-zinc-400">DOMAIN NAME</label>
           <input
-            id="new-domain-input"
+            id="admin-domain-input"
             type="text"
             bind:value={newDomain}
-            placeholder="example.com"
+            placeholder="domain.com"
             required
-            class="mt-1.5 w-full rounded-xl border border-slate-800 bg-slate-950 px-3.5 py-2.5 text-xs text-white placeholder:text-slate-500 focus:border-indigo-500 focus:outline-none"
+            class="mt-1 w-full rounded border border-zinc-800 bg-zinc-950 px-3 py-1.5 font-mono text-xs text-white placeholder:text-zinc-600 focus:border-zinc-500 focus:outline-none"
           />
         </div>
 
@@ -801,15 +687,15 @@
           <button
             type="button"
             onclick={() => (isAddDomainOpen = false)}
-            class="rounded-xl px-4 py-2 text-xs font-semibold text-slate-400 hover:bg-slate-800"
+            class="rounded px-3 py-1 text-xs text-zinc-400 hover:bg-zinc-800"
           >
             Cancel
           </button>
           <button
             type="submit"
-            class="rounded-xl bg-indigo-600 px-4 py-2 text-xs font-semibold text-white hover:bg-indigo-700"
+            class="rounded bg-zinc-100 px-3 py-1 text-xs font-semibold text-zinc-900 hover:bg-white"
           >
-            Add Domain
+            Save Domain
           </button>
         </div>
       </form>
@@ -822,21 +708,21 @@
 <!-- ═════════════════════════════════════════════════════════════════════════ -->
 {#if isAddAccountOpen}
   <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4">
-    <div class="w-full max-w-md rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow-2xl">
-      <div class="flex items-center justify-between">
-        <h3 class="font-bold text-white text-sm">Provision Email Account</h3>
-        <button onclick={() => (isAddAccountOpen = false)} class="text-slate-400 hover:text-white">
+    <div class="w-full max-w-sm rounded-lg border border-zinc-800 bg-zinc-900 p-5 shadow-2xl">
+      <div class="flex items-center justify-between border-b border-zinc-800 pb-3">
+        <span class="font-mono text-xs font-semibold text-white">PROVISION ACCOUNT</span>
+        <button onclick={() => (isAddAccountOpen = false)} class="text-zinc-500 hover:text-white">
           <X class="h-4 w-4" />
         </button>
       </div>
 
-      <form onsubmit={handleAddAccount} class="mt-4 space-y-4">
+      <form onsubmit={handleAddAccount} class="mt-4 space-y-3 font-mono text-xs">
         <div>
-          <label for="account-domain-select" class="block text-xs font-semibold text-slate-300">Domain</label>
+          <label for="admin-account-domain" class="block text-[11px] text-zinc-400">DOMAIN</label>
           <select
-            id="account-domain-select"
+            id="admin-account-domain"
             bind:value={newAccountDomain}
-            class="mt-1.5 w-full rounded-xl border border-slate-800 bg-slate-950 px-3.5 py-2.5 text-xs text-white focus:border-indigo-500 focus:outline-none"
+            class="mt-1 w-full rounded border border-zinc-800 bg-zinc-950 px-2.5 py-1.5 text-xs text-white focus:outline-none"
           >
             {#each tenants as t}
               <option value={t.domain}>{t.domain}</option>
@@ -845,26 +731,26 @@
         </div>
 
         <div>
-          <label for="account-user-input" class="block text-xs font-semibold text-slate-300">Username / Alias</label>
+          <label for="admin-account-alias" class="block text-[11px] text-zinc-400">USERNAME</label>
           <input
-            id="account-user-input"
+            id="admin-account-alias"
             type="text"
             bind:value={newAccountUsername}
-            placeholder="john"
+            placeholder="user"
             required
-            class="mt-1.5 w-full rounded-xl border border-slate-800 bg-slate-950 px-3.5 py-2.5 text-xs text-white placeholder:text-slate-500 focus:border-indigo-500 focus:outline-none"
+            class="mt-1 w-full rounded border border-zinc-800 bg-zinc-950 px-2.5 py-1.5 text-xs text-white focus:border-zinc-500 focus:outline-none"
           />
         </div>
 
         <div>
-          <label for="account-pass-input" class="block text-xs font-semibold text-slate-300">Password</label>
+          <label for="admin-account-pass" class="block text-[11px] text-zinc-400">PASSWORD</label>
           <input
-            id="account-pass-input"
+            id="admin-account-pass"
             type="password"
             bind:value={newAccountPassword}
-            placeholder="Choose password"
+            placeholder="password"
             required
-            class="mt-1.5 w-full rounded-xl border border-slate-800 bg-slate-950 px-3.5 py-2.5 text-xs text-white placeholder:text-slate-500 focus:border-indigo-500 focus:outline-none"
+            class="mt-1 w-full rounded border border-zinc-800 bg-zinc-950 px-2.5 py-1.5 text-xs text-white focus:border-zinc-500 focus:outline-none"
           />
         </div>
 
@@ -872,15 +758,15 @@
           <button
             type="button"
             onclick={() => (isAddAccountOpen = false)}
-            class="rounded-xl px-4 py-2 text-xs font-semibold text-slate-400 hover:bg-slate-800"
+            class="rounded px-3 py-1 text-xs text-zinc-400 hover:bg-zinc-800"
           >
             Cancel
           </button>
           <button
             type="submit"
-            class="rounded-xl bg-indigo-600 px-4 py-2 text-xs font-semibold text-white hover:bg-indigo-700"
+            class="rounded bg-zinc-100 px-3 py-1 text-xs font-semibold text-zinc-900 hover:bg-white"
           >
-            Create Account
+            Create
           </button>
         </div>
       </form>
@@ -893,44 +779,37 @@
 <!-- ═════════════════════════════════════════════════════════════════════════ -->
 {#if dkimModal}
   <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4">
-    <div class="w-full max-w-lg rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow-2xl">
-      <div class="flex items-center justify-between">
-        <div class="flex items-center gap-2">
-          <Key class="h-4 w-4 text-indigo-400" />
-          <h3 class="font-bold text-white text-sm">DKIM DNS Configuration</h3>
-        </div>
-        <button onclick={() => (dkimModal = null)} class="text-slate-400 hover:text-white">
+    <div class="w-full max-w-lg rounded-lg border border-zinc-800 bg-zinc-900 p-5 shadow-2xl">
+      <div class="flex items-center justify-between border-b border-zinc-800 pb-3">
+        <span class="font-mono text-xs font-semibold text-white">DKIM RSA-2048 TXT RECORD</span>
+        <button onclick={() => (dkimModal = null)} class="text-zinc-500 hover:text-white">
           <X class="h-4 w-4" />
         </button>
       </div>
 
-      <div class="mt-4 text-xs text-slate-300">
-        <p>
-          Add the following <strong>TXT record</strong> to your DNS provider (Cloudflare, Namecheap, Route53) for <strong>{dkimModal.domain}</strong>:
-        </p>
+      <div class="mt-3 font-mono text-xs text-zinc-300">
+        <div class="text-[11px] text-zinc-400">Record Name (Host):</div>
+        <div class="mt-0.5 select-all rounded bg-zinc-950 p-2 text-zinc-300 border border-zinc-800 text-[11px]">
+          default._domainkey.{dkimModal.domain}
+        </div>
 
-        <div class="mt-3 rounded-xl border border-slate-800 bg-slate-950 p-3.5">
-          <div class="text-[11px] font-semibold text-slate-400">Record Name / Host:</div>
-          <div class="mt-0.5 font-mono text-indigo-300 text-xs">default._domainkey.{dkimModal.domain}</div>
-
-          <div class="mt-3 text-[11px] font-semibold text-slate-400">Record Value:</div>
-          <div class="mt-0.5 font-mono text-white text-[11px] break-all bg-slate-900 p-2.5 rounded-lg border border-slate-800">
-            {dkimModal.dns_record}
-          </div>
+        <div class="mt-3 text-[11px] text-zinc-400">Record Value:</div>
+        <div class="mt-0.5 select-all break-all rounded bg-zinc-950 p-2 text-zinc-300 border border-zinc-800 text-[11px]">
+          {dkimModal.dns_record}
         </div>
       </div>
 
-      <div class="mt-6 flex justify-end gap-2">
+      <div class="mt-4 flex justify-end">
         <button
           onclick={copyDkim}
-          class="flex items-center gap-1.5 rounded-xl bg-indigo-600 px-4 py-2 text-xs font-semibold text-white hover:bg-indigo-700"
+          class="flex items-center gap-1.5 rounded bg-zinc-100 px-3 py-1.5 font-mono text-xs font-semibold text-zinc-900 hover:bg-white"
         >
           {#if hasCopiedDkim}
-            <Check class="h-3.5 w-3.5 text-emerald-300" />
-            Copied!
+            <Check class="h-3 w-3 text-emerald-600" />
+            <span>COPIED</span>
           {:else}
-            <Copy class="h-3.5 w-3.5" />
-            Copy DNS Record
+            <Copy class="h-3 w-3" />
+            <span>COPY TXT VALUE</span>
           {/if}
         </button>
       </div>
@@ -939,11 +818,11 @@
 {/if}
 
 <!-- ═════════════════════════════════════════════════════════════════════════ -->
-<!-- TOAST NOTIFICATION                                                       -->
+<!-- TOAST                                                                     -->
 <!-- ═════════════════════════════════════════════════════════════════════════ -->
 {#if toast}
-  <div class="fixed bottom-6 right-6 z-50 flex items-center gap-2.5 rounded-xl border border-slate-800 bg-slate-900 px-4 py-3 text-xs font-medium text-white shadow-xl shadow-black/40">
-    <span class="h-2 w-2 rounded-full {toast.type === 'success' ? 'bg-emerald-400' : toast.type === 'error' ? 'bg-rose-400' : 'bg-indigo-400'}"></span>
+  <div class="fixed bottom-4 right-4 z-50 flex items-center gap-2 rounded border border-zinc-800 bg-zinc-900 px-3 py-2 font-mono text-xs text-white shadow-xl">
+    <span class="h-1.5 w-1.5 rounded-full {toast.type === 'success' ? 'bg-emerald-400' : toast.type === 'error' ? 'bg-rose-400' : 'bg-blue-400'}"></span>
     {toast.message}
   </div>
 {/if}

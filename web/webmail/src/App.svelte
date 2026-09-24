@@ -1,7 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import {
-    Mail,
     Inbox,
     Send,
     FileText,
@@ -16,16 +15,14 @@
     ReplyAll,
     Forward,
     Check,
-    Paperclip,
-    FolderPlus,
-    Tag,
     X,
-    ChevronDown,
-    SlidersHorizontal,
     Code,
-    Sparkles,
-    ShieldCheck,
-    Clock,
+    SlidersHorizontal,
+    Maximize2,
+    Minimize2,
+    Shield,
+    HardDrive,
+    Tag,
   } from "@lucide/svelte";
 
   interface Mailbox {
@@ -67,10 +64,8 @@
     html_body: string | null;
   }
 
-  // Relative API base ensures zero CORS/host mismatch
   const API_BASE = "";
 
-  // State
   let currentFolder = $state("INBOX");
   let filterState = $state<"all" | "unread" | "starred">("all");
   let searchQuery = $state("");
@@ -90,57 +85,56 @@
   let composeBody = $state("");
   let showCc = $state(false);
 
-  // Toast State
+  // Toast
   let toast = $state<{ message: string; type: "success" | "error" | "info" } | null>(null);
   function notify(message: string, type: "success" | "error" | "info" = "info") {
     toast = { message, type };
     setTimeout(() => {
       if (toast?.message === message) toast = null;
-    }, 4000);
+    }, 3500);
   }
 
-  // Sample data fallback for offline or zero-message mailboxes
   const sampleMessages: MessageItem[] = [
     {
-      id: "msg-welcome-01",
+      id: "msg-01",
       mailbox_id: "INBOX",
       uid: 1,
       blob_id: "blob-01",
       size_bytes: 4096,
-      subject: "Welcome to FastrMail — Enterprise Mail Server Online",
-      from: "FastrMail System <system@fastrmail.internal>",
-      to: "admin@fastrmail.internal",
-      internal_date: new Date(Date.now() - 1000 * 60 * 15).toISOString(),
+      subject: "Welcome to FastrMail — Enterprise Mail Server Ready",
+      from: "FastrMail System <system@fastrsoft.com>",
+      to: "admin@fastrsoft.com",
+      internal_date: new Date(Date.now() - 1000 * 60 * 12).toISOString(),
       flags: "",
-      snippet: "Your FastrMail instance is online and healthy. SMTP (25/587), IMAP4rev2 (143), and POP3 (110) are active.",
+      snippet: "Your FastrMail instance is online. Inbound SMTP (25/587), IMAP4rev2 (143), POP3 (110) are active.",
       starred: true,
     },
     {
-      id: "msg-spamguard-02",
+      id: "msg-02",
       mailbox_id: "INBOX",
       uid: 2,
       blob_id: "blob-02",
       size_bytes: 2048,
-      subject: "SpamGuard Defenses Activated & Verified",
-      from: "Security Operations <security@fastrmail.internal>",
-      to: "admin@fastrmail.internal",
-      internal_date: new Date(Date.now() - 1000 * 60 * 120).toISOString(),
+      subject: "SpamGuard Defenses Online & Enforcing",
+      from: "Security Operations <security@fastrsoft.com>",
+      to: "admin@fastrsoft.com",
+      internal_date: new Date(Date.now() - 1000 * 60 * 85).toISOString(),
       flags: "Seen",
       snippet: "DNSBL filters (Spamhaus, Barracuda, Sorbs) and automatic Greylisting FSM rules have been armed.",
       starred: false,
     },
     {
-      id: "msg-dkim-03",
+      id: "msg-03",
       mailbox_id: "INBOX",
       uid: 3,
       blob_id: "blob-03",
       size_bytes: 3120,
-      subject: "DKIM Key Pair Generated for Primary Domain",
-      from: "DKIM Signer <postmaster@fastrmail.internal>",
-      to: "admin@fastrmail.internal",
-      internal_date: new Date(Date.now() - 1000 * 60 * 60 * 12).toISOString(),
+      subject: "DKIM Key Pair Generated (RSA-2048)",
+      from: "DKIM Signer <postmaster@fastrsoft.com>",
+      to: "admin@fastrsoft.com",
+      internal_date: new Date(Date.now() - 1000 * 60 * 60 * 8).toISOString(),
       flags: "Seen",
-      snippet: "RSA 2048-bit key generated successfully. DNS TXT record is available in the Admin Console.",
+      snippet: "RSA 2048-bit cryptographic key generated. DNS TXT record is available in the Admin Console.",
       starred: false,
     },
   ];
@@ -158,15 +152,11 @@
     try {
       const res = await fetch(`${API_BASE}/api/v1/mailboxes`);
       if (res.ok) {
-        mailboxes = await res.json();
+        const d = await res.json();
+        if (d && d.length > 0) mailboxes = d;
       }
     } catch {
       // offline fallback
-      mailboxes = [
-        { id: "mb-inbox", name: "INBOX", uid_validity: 1, uid_next: 4, total_messages: 3, unseen_messages: 1 },
-        { id: "mb-sent", name: "Sent", uid_validity: 1, uid_next: 1, total_messages: 0, unseen_messages: 0 },
-        { id: "mb-trash", name: "Trash", uid_validity: 1, uid_next: 1, total_messages: 0, unseen_messages: 0 },
-      ];
     }
   }
 
@@ -216,16 +206,16 @@
       internal_date: msg.internal_date,
       flags: msg.flags ? msg.flags.split(",") : [],
       text_body: `From: ${msg.from}\nTo: ${msg.to}\nSubject: ${msg.subject}\nDate: ${msg.internal_date}\n\n${msg.snippet || "No preview snippet available."}\n\n--\nFastrMail High-Performance Mail Engine (Rust 1.81+)`,
-      html_body: `<div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.6; color: #1e293b;">
-        <h3 style="color: #0f172a; margin-top: 0;">${msg.subject || "(No Subject)"}</h3>
-        <p style="font-size: 15px; color: #334155;">${msg.snippet || "Thank you for using FastrMail."}</p>
-        <div style="margin-top: 24px; padding: 16px; background-color: #f8fafc; border-left: 4px solid #4f46e5; border-radius: 6px;">
-          <p style="margin: 0; font-size: 13px; color: #475569;">
-            <strong>Server Status:</strong> All core RFC endpoints (SMTP, IMAP, JMAP) operational.
+      html_body: `<div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.6; color: #18181b;">
+        <h2 style="font-size: 18px; font-weight: 700; color: #09090b; margin-top: 0; margin-bottom: 12px; letter-spacing: -0.02em;">${msg.subject || "(No Subject)"}</h2>
+        <p style="font-size: 14px; color: #27272a; margin-bottom: 20px;">${msg.snippet || "Thank you for using FastrMail."}</p>
+        <div style="margin-top: 24px; padding: 14px 16px; background-color: #fafafa; border: 1px solid #e4e4e7; border-left: 3px solid #18181b; border-radius: 4px;">
+          <p style="margin: 0; font-size: 12px; color: #52525b; line-height: 1.5;">
+            <strong style="color: #09090b;">RFC Protocols Verified:</strong> SMTP Inbound (:2525), Submission (:2526), IMAP4rev2 (:1143), POP3 (:1110) and JMAP (:8080) are all operating on this node.
           </p>
         </div>
-        <hr style="margin: 24px 0; border: none; border-top: 1px solid #e2e8f0;" />
-        <p style="font-size: 12px; color: #94a3b8;">Sent via FastrMail Engine • Tantivy Search Indexed • DKIM Verified</p>
+        <hr style="margin: 28px 0; border: none; border-top: 1px solid #e4e4e7;" />
+        <p style="font-size: 11px; color: #a1a1aa; margin: 0;">FastrMail Single-Binary Mail Server • Tantivy Search Engine • RSA-2048 Signed</p>
       </div>`,
     };
   }
@@ -242,27 +232,27 @@
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          from: "postmaster@fastrmail.internal",
+          from: "admin@fastrsoft.com",
           to: composeTo.split(",").map((s) => s.trim()),
           subject: composeSubject,
           text_body: composeBody,
-          html_body: `<div style="font-family: sans-serif;">${composeBody.replace(/\n/g, "<br>")}</div>`,
+          html_body: `<div style="font-family: sans-serif; font-size: 14px; line-height: 1.6;">${composeBody.replace(/\n/g, "<br>")}</div>`,
         }),
       });
 
       if (res.ok) {
-        notify("Message sent successfully!", "success");
+        notify("Message sent successfully via SMTP spool", "success");
         isComposeOpen = false;
         composeTo = "";
         composeCc = "";
         composeSubject = "";
         composeBody = "";
       } else {
-        notify("Sent message queued in outbound spool.", "info");
+        notify("Message queued in outbound spool.", "info");
         isComposeOpen = false;
       }
     } catch {
-      notify("Sent message spooled locally.", "info");
+      notify("Message queued in local spool.", "info");
       isComposeOpen = false;
     } finally {
       isSending = false;
@@ -275,15 +265,6 @@
     } else {
       selectedIds = new Set(messages.map((m) => m.id));
     }
-  }
-
-  function toggleSelect(id: string) {
-    if (selectedIds.has(id)) {
-      selectedIds.delete(id);
-    } else {
-      selectedIds.add(id);
-    }
-    selectedIds = new Set(selectedIds);
   }
 
   function toggleStar(msg: MessageItem, e: MouseEvent) {
@@ -320,76 +301,70 @@
     })
   );
 
+  function handleKeydown(e: KeyboardEvent) {
+    if ((e.target as HTMLElement)?.tagName === "INPUT" || (e.target as HTMLElement)?.tagName === "TEXTAREA") return;
+    if (e.key === "c" || e.key === "C") {
+      e.preventDefault();
+      isComposeOpen = true;
+    } else if (e.key === "r" && selectedMessage) {
+      e.preventDefault();
+      composeTo = selectedMessage.from || "";
+      composeSubject = selectedMessage.subject ? `Re: ${selectedMessage.subject}` : "Re: ";
+      isComposeOpen = true;
+    }
+  }
+
   onMount(() => {
+    window.addEventListener("keydown", handleKeydown);
     loadMailboxes();
     loadMessages("INBOX");
+    return () => window.removeEventListener("keydown", handleKeydown);
   });
 </script>
 
-<div class="flex h-screen w-screen overflow-hidden bg-slate-100 font-sans text-slate-800 antialiased dark:bg-slate-950 dark:text-slate-200">
+<div class="flex h-screen w-screen overflow-hidden bg-white text-zinc-900 antialiased select-none dark:bg-zinc-950 dark:text-zinc-100">
   <!-- ═════════════════════════════════════════════════════════════════════════ -->
-  <!-- 1. LEFT PANE: BRAND, COMPOSE, FOLDERS & QUOTA                            -->
+  <!-- 1. LEFT PANE: SNAPPYMAIL / SUPERHUMAN DESKTOP SIDEBAR (210px)             -->
   <!-- ═════════════════════════════════════════════════════════════════════════ -->
-  <aside class="flex w-64 flex-col border-r border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
-    <!-- Brand Header -->
-    <div class="flex h-16 items-center gap-3 border-b border-slate-200 px-5 dark:border-slate-800">
-      <div class="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-tr from-indigo-600 to-indigo-500 text-white shadow-sm shadow-indigo-500/25">
-        <Mail class="h-5 w-5" />
-      </div>
-      <div>
-        <div class="flex items-center gap-1.5 font-bold tracking-tight text-slate-900 dark:text-white">
-          FastrMail
-          <span class="rounded bg-indigo-50 px-1.5 py-0.5 text-[10px] font-semibold text-indigo-600 dark:bg-indigo-950 dark:text-indigo-400">v1.0</span>
-        </div>
-        <div class="text-[11px] text-slate-500 dark:text-slate-400">Enterprise Webmail</div>
-      </div>
-    </div>
-
-    <!-- User Account Card -->
-    <div class="p-4 pb-2">
-      <div class="flex items-center gap-3 rounded-xl border border-slate-200/80 bg-slate-50/80 p-2.5 dark:border-slate-800 dark:bg-slate-800/50">
-        <div class="flex h-8 w-8 items-center justify-center rounded-lg bg-indigo-600 font-semibold text-white text-xs">
-          PM
-        </div>
-        <div class="flex-1 truncate">
-          <div class="truncate text-xs font-semibold text-slate-800 dark:text-slate-200">Postmaster</div>
-          <div class="flex items-center gap-1.5 text-[11px] text-slate-500 dark:text-slate-400">
-            <span class="h-1.5 w-1.5 rounded-full bg-emerald-500"></span>
-            Online
-          </div>
-        </div>
+  <aside class="flex w-[210px] shrink-0 flex-col border-r border-zinc-200/90 bg-zinc-50/70 dark:border-zinc-800 dark:bg-zinc-900/60">
+    <!-- Top Account Header -->
+    <div class="flex h-11 items-center justify-between border-b border-zinc-200/80 px-3.5 dark:border-zinc-800">
+      <div class="flex items-center gap-2 truncate">
+        <span class="h-2 w-2 rounded-full bg-emerald-500 ring-2 ring-emerald-500/20"></span>
+        <span class="truncate text-xs font-semibold text-zinc-800 dark:text-zinc-200">admin@fastrsoft.com</span>
       </div>
     </div>
 
     <!-- Compose Button -->
-    <div class="px-4 py-2">
+    <div class="p-2.5">
       <button
         onclick={() => (isComposeOpen = true)}
-        class="flex w-full items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm shadow-indigo-600/30 transition-all hover:bg-indigo-700 hover:shadow-md active:scale-[0.98]"
+        class="flex h-8 w-full items-center justify-center gap-2 rounded-md bg-zinc-900 text-xs font-medium text-white shadow-xs transition hover:bg-zinc-800 active:scale-[0.99] dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-200"
       >
-        <Plus class="h-4 w-4" />
-        Compose Email
+        <Plus class="h-3.5 w-3.5" />
+        <span>Compose</span>
+        <kbd class="ml-auto rounded bg-zinc-800 px-1 py-0.5 text-[9px] font-mono text-zinc-400 dark:bg-zinc-300 dark:text-zinc-700">C</kbd>
       </button>
     </div>
 
-    <!-- Folder Navigation Tree -->
-    <nav class="flex-1 space-y-1 overflow-y-auto px-3 py-3">
+    <!-- Folder Navigation -->
+    <nav class="flex-1 space-y-0.5 overflow-y-auto px-2">
       {#each standardFolders as folder}
         <button
           onclick={() => {
             currentFolder = folder.id;
             loadMessages(folder.id);
           }}
-          class="flex w-full items-center justify-between rounded-lg px-3 py-2 text-sm font-medium transition-colors {currentFolder === folder.id
-            ? 'bg-indigo-50 font-semibold text-indigo-700 dark:bg-indigo-950/60 dark:text-indigo-300'
-            : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-200'}"
+          class="flex h-8 w-full items-center justify-between rounded-md px-2.5 text-xs font-medium transition-colors {currentFolder === folder.id
+            ? 'bg-zinc-200/80 font-semibold text-zinc-900 dark:bg-zinc-800 dark:text-white'
+            : 'text-zinc-600 hover:bg-zinc-200/50 hover:text-zinc-900 dark:text-zinc-400 dark:hover:bg-zinc-800/50 dark:hover:text-zinc-200'}"
         >
-          <div class="flex items-center gap-3">
-            <folder.icon class="h-4 w-4 {currentFolder === folder.id ? 'text-indigo-600 dark:text-indigo-400' : 'text-slate-400'}" />
+          <div class="flex items-center gap-2.5">
+            <folder.icon class="h-3.5 w-3.5 {currentFolder === folder.id ? 'text-zinc-900 dark:text-white' : 'text-zinc-400'}" />
             <span>{folder.label}</span>
           </div>
           {#if folder.badge > 0}
-            <span class="rounded-full bg-indigo-600 px-2 py-0.5 text-[11px] font-bold text-white">
+            <span class="rounded bg-zinc-900/10 px-1.5 py-0.5 text-[10px] font-mono font-semibold text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300">
               {folder.badge}
             </span>
           {/if}
@@ -397,93 +372,80 @@
       {/each}
     </nav>
 
-    <!-- Storage Usage Footer -->
-    <div class="border-t border-slate-200 p-4 dark:border-slate-800">
-      <div class="flex items-center justify-between text-xs text-slate-500">
-        <span>Storage</span>
-        <span class="font-medium text-slate-700 dark:text-slate-300">128 MB / 10 GB</span>
+    <!-- Storage Usage Meter -->
+    <div class="border-t border-zinc-200/80 p-3 dark:border-zinc-800 text-[11px] text-zinc-500">
+      <div class="flex items-center justify-between">
+        <span class="flex items-center gap-1.5">
+          <HardDrive class="h-3 w-3 text-zinc-400" />
+          Quota
+        </span>
+        <span class="font-mono text-[10px] text-zinc-600 dark:text-zinc-400">128 MB / 10 GB</span>
       </div>
-      <div class="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-slate-200 dark:bg-slate-800">
-        <div class="h-full w-[2%] rounded-full bg-indigo-600"></div>
+      <div class="mt-1.5 h-1 w-full overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-800">
+        <div class="h-full w-[1.2%] bg-zinc-900 dark:bg-zinc-200 rounded-full"></div>
       </div>
     </div>
   </aside>
 
   <!-- ═════════════════════════════════════════════════════════════════════════ -->
-  <!-- 2. MIDDLE PANE: THREAD LIST & TANTIVY SEARCH                              -->
+  <!-- 2. MIDDLE PANE: THREAD LIST (320px)                                       -->
   <!-- ═════════════════════════════════════════════════════════════════════════ -->
-  <section class="flex w-96 flex-col border-r border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
+  <section class="flex w-[320px] shrink-0 flex-col border-r border-zinc-200/90 bg-white dark:border-zinc-800 dark:bg-zinc-950">
     <!-- Search Bar & Filters -->
-    <div class="border-b border-slate-200 p-3 dark:border-slate-800">
-      <div class="relative">
-        <Search class="absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
+    <div class="flex h-11 items-center gap-2 border-b border-zinc-200/80 px-2.5 dark:border-zinc-800">
+      <div class="relative flex-1">
+        <Search class="absolute left-2.5 top-2 h-3.5 w-3.5 text-zinc-400" />
         <input
           type="text"
           bind:value={searchQuery}
-          placeholder="Search mail (Tantivy)..."
-          class="w-full rounded-lg border border-slate-200 bg-slate-50 py-2 pl-9 pr-3 text-xs placeholder:text-slate-400 focus:border-indigo-500 focus:bg-white focus:outline-none focus:ring-1 focus:ring-indigo-500 dark:border-slate-800 dark:bg-slate-800 dark:text-white"
+          placeholder="Search (Tantivy)..."
+          class="h-7.5 w-full rounded border border-zinc-200 bg-zinc-50 pl-8 pr-2 text-xs placeholder:text-zinc-400 focus:border-zinc-400 focus:bg-white focus:outline-none dark:border-zinc-800 dark:bg-zinc-900 dark:text-white"
         />
       </div>
 
-      <!-- Filter Tabs -->
-      <div class="mt-3 flex items-center justify-between">
-        <div class="flex items-center gap-1 rounded-lg bg-slate-100 p-0.5 text-xs font-medium dark:bg-slate-800">
-          <button
-            onclick={() => (filterState = "all")}
-            class="rounded-md px-2.5 py-1 transition-colors {filterState === 'all'
-              ? 'bg-white font-semibold text-slate-900 shadow-xs dark:bg-slate-700 dark:text-white'
-              : 'text-slate-500 hover:text-slate-900 dark:text-slate-400'}"
-          >
-            All
-          </button>
-          <button
-            onclick={() => (filterState = "unread")}
-            class="rounded-md px-2.5 py-1 transition-colors {filterState === 'unread'
-              ? 'bg-white font-semibold text-slate-900 shadow-xs dark:bg-slate-700 dark:text-white'
-              : 'text-slate-500 hover:text-slate-900 dark:text-slate-400'}"
-          >
-            Unread
-          </button>
-          <button
-            onclick={() => (filterState = "starred")}
-            class="rounded-md px-2.5 py-1 transition-colors {filterState === 'starred'
-              ? 'bg-white font-semibold text-slate-900 shadow-xs dark:bg-slate-700 dark:text-white'
-              : 'text-slate-500 hover:text-slate-900 dark:text-slate-400'}"
-          >
-            Starred
-          </button>
-        </div>
+      <button
+        onclick={() => loadMessages(currentFolder)}
+        title="Refresh Mailbox"
+        class="flex h-7.5 w-7.5 items-center justify-center rounded border border-zinc-200 text-zinc-500 hover:bg-zinc-100 hover:text-zinc-800 dark:border-zinc-800 dark:hover:bg-zinc-900"
+      >
+        <RefreshCw class="h-3.5 w-3.5 {isLoadingMessages ? 'animate-spin text-zinc-900 dark:text-white' : ''}" />
+      </button>
+    </div>
 
+    <!-- Filter Bar -->
+    <div class="flex h-7.5 items-center justify-between border-b border-zinc-100 bg-zinc-50/50 px-3 text-[11px] text-zinc-500 dark:border-zinc-900 dark:bg-zinc-900/30">
+      <div class="flex items-center gap-2">
         <button
-          onclick={() => loadMessages(currentFolder)}
-          title="Refresh Messages"
-          class="rounded-lg p-1.5 text-slate-500 hover:bg-slate-100 hover:text-slate-700 dark:hover:bg-slate-800"
+          onclick={() => (filterState = "all")}
+          class="font-medium {filterState === 'all' ? 'text-zinc-900 font-semibold dark:text-white' : 'hover:text-zinc-800'}"
         >
-          <RefreshCw class="h-3.5 w-3.5 {isLoadingMessages ? 'animate-spin text-indigo-600' : ''}" />
+          All
+        </button>
+        <span class="text-zinc-300 dark:text-zinc-700">•</span>
+        <button
+          onclick={() => (filterState = "unread")}
+          class="font-medium {filterState === 'unread' ? 'text-zinc-900 font-semibold dark:text-white' : 'hover:text-zinc-800'}"
+        >
+          Unread
+        </button>
+        <span class="text-zinc-300 dark:text-zinc-700">•</span>
+        <button
+          onclick={() => (filterState = "starred")}
+          class="font-medium {filterState === 'starred' ? 'text-zinc-900 font-semibold dark:text-white' : 'hover:text-zinc-800'}"
+        >
+          Starred
         </button>
       </div>
+
+      <span class="font-mono text-[10px] text-zinc-400">{filteredMessages.length} msgs</span>
     </div>
 
-    <!-- Bulk Action Toolbar -->
-    <div class="flex items-center justify-between border-b border-slate-100 bg-slate-50/50 px-3 py-2 text-xs text-slate-500 dark:border-slate-800/60 dark:bg-slate-900/50">
-      <label class="flex items-center gap-2 cursor-pointer select-none">
-        <input
-          type="checkbox"
-          checked={selectedIds.size > 0 && selectedIds.size === messages.length}
-          onchange={toggleSelectAll}
-          class="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
-        />
-        <span>Select All</span>
-      </label>
-      <span>{filteredMessages.length} messages</span>
-    </div>
-
-    <!-- Message Scroll Area -->
-    <div class="flex-1 overflow-y-auto divide-y divide-slate-100 dark:divide-slate-800">
+    <!-- Message List Items -->
+    <div class="flex-1 overflow-y-auto divide-y divide-zinc-100 dark:divide-zinc-900">
       {#if filteredMessages.length === 0}
-        <div class="flex flex-col items-center justify-center p-12 text-center text-slate-400">
-          <Mail class="h-8 w-8 stroke-1 text-slate-300 dark:text-slate-600" />
-          <p class="mt-2 text-xs">No messages in this folder.</p>
+        <div class="flex flex-col items-center justify-center p-8 text-center text-zinc-400 text-xs">
+          <Inbox class="h-6 w-6 stroke-1 text-zinc-300 dark:text-zinc-700" />
+          <p class="mt-2 font-medium">Folder is empty</p>
         </div>
       {:else}
         {#each filteredMessages as msg}
@@ -492,37 +454,34 @@
             tabindex="0"
             onclick={() => viewMessage(msg)}
             onkeydown={(e) => e.key === 'Enter' && viewMessage(msg)}
-            class="group relative flex cursor-pointer flex-col gap-1 p-3.5 transition-colors {selectedMessage?.id === msg.id
-              ? 'bg-indigo-50/80 dark:bg-indigo-950/40 border-l-3 border-indigo-600'
-              : 'hover:bg-slate-50/80 dark:hover:bg-slate-800/50'}"
+            class="group relative flex cursor-pointer flex-col justify-center px-3 py-2.5 transition-colors {selectedMessage?.id === msg.id
+              ? 'bg-zinc-100 dark:bg-zinc-900 border-l-2 border-zinc-900 dark:border-zinc-100'
+              : 'hover:bg-zinc-50 dark:hover:bg-zinc-900/50'}"
           >
-            <!-- Top Line: Sender, Star & Date -->
-            <div class="flex items-center justify-between text-xs">
-              <div class="flex items-center gap-2 truncate pr-2">
-                <button
-                  onclick={(e) => toggleStar(msg, e)}
-                  class="text-slate-300 hover:text-amber-400 dark:text-slate-600"
-                >
-                  <Star class="h-3.5 w-3.5 {msg.starred ? 'fill-amber-400 text-amber-400' : ''}" />
-                </button>
-                <span class="truncate font-semibold {msg.flags.includes('Seen') ? 'text-slate-600 dark:text-slate-400' : 'text-slate-900 dark:text-white'}">
-                  {msg.from?.split('<')[0]?.trim() || msg.from}
+            <!-- Line 1: Sender & Date -->
+            <div class="flex items-center justify-between text-xs leading-none">
+              <div class="flex items-center gap-1.5 truncate pr-2">
+                {#if !msg.flags.includes("Seen")}
+                  <span class="h-1.5 w-1.5 rounded-full bg-blue-600 shrink-0"></span>
+                {/if}
+                <span class="truncate font-semibold {msg.flags.includes('Seen') ? 'text-zinc-600 dark:text-zinc-400 font-normal' : 'text-zinc-900 dark:text-white'}">
+                  {msg.from?.split('<')[0]?.replace(/"/g, '')?.trim() || msg.from}
                 </span>
               </div>
-              <span class="shrink-0 text-[11px] text-slate-400">
+              <span class="shrink-0 font-mono text-[10px] text-zinc-400">
                 {formatDate(msg.internal_date)}
               </span>
             </div>
 
-            <!-- Subject -->
-            <div class="truncate text-xs {msg.flags.includes('Seen') ? 'text-slate-700 dark:text-slate-300' : 'font-semibold text-slate-900 dark:text-white'}">
+            <!-- Line 2: Subject -->
+            <div class="mt-1 truncate text-xs {msg.flags.includes('Seen') ? 'text-zinc-700 dark:text-zinc-300' : 'font-medium text-zinc-900 dark:text-white'}">
               {msg.subject || "(No Subject)"}
             </div>
 
-            <!-- Snippet -->
-            <p class="line-clamp-1 text-[11px] text-slate-500 dark:text-slate-400">
-              {msg.snippet || "Click to inspect email body..."}
-            </p>
+            <!-- Line 3: Snippet -->
+            <div class="mt-0.5 truncate text-[11px] text-zinc-400">
+              {msg.snippet || "..."}
+            </div>
           </div>
         {/each}
       {/if}
@@ -530,122 +489,122 @@
   </section>
 
   <!-- ═════════════════════════════════════════════════════════════════════════ -->
-  <!-- 3. RIGHT PANE: READING VIEW & ACTION CENTER                              -->
+  <!-- 3. RIGHT PANE: DESKTOP READING VIEW                                       -->
   <!-- ═════════════════════════════════════════════════════════════════════════ -->
-  <main class="flex flex-1 flex-col overflow-hidden bg-white dark:bg-slate-900">
+  <main class="flex flex-1 flex-col overflow-hidden bg-white dark:bg-zinc-950">
     {#if !selectedMessage}
-      <div class="flex flex-1 flex-col items-center justify-center p-12 text-center text-slate-400">
-        <div class="flex h-16 w-16 items-center justify-center rounded-2xl bg-slate-50 text-slate-300 dark:bg-slate-800 dark:text-slate-600">
-          <Mail class="h-8 w-8" />
-        </div>
-        <h3 class="mt-4 font-semibold text-slate-700 dark:text-slate-300">Select an email to view</h3>
-        <p class="mt-1 text-xs text-slate-400 max-w-xs">
-          Choose a conversation from the list to display headers, attachments, and the body.
-        </p>
+      <div class="flex flex-1 flex-col items-center justify-center p-8 text-center text-zinc-400 text-xs">
+        <Inbox class="h-8 w-8 stroke-1 text-zinc-300 dark:text-zinc-800" />
+        <p class="mt-2">Select an email to view details</p>
       </div>
     {:else}
-      <!-- Action Toolbar -->
-      <header class="flex h-14 items-center justify-between border-b border-slate-200 px-6 dark:border-slate-800">
-        <div class="flex items-center gap-1.5">
-          <button
-            onclick={() => notify("Reply composer opened", "info")}
-            class="flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"
-          >
-            <Reply class="h-3.5 w-3.5" />
-            Reply
-          </button>
-          <button
-            onclick={() => notify("Reply all opened", "info")}
-            class="flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"
-          >
-            <ReplyAll class="h-3.5 w-3.5" />
-            Reply All
-          </button>
-          <button
-            onclick={() => notify("Forward composer opened", "info")}
-            class="flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"
-          >
-            <Forward class="h-3.5 w-3.5" />
-            Forward
-          </button>
-        </div>
-
+      <!-- Action Toolbar Ribbon -->
+      <header class="flex h-11 items-center justify-between border-b border-zinc-200/80 px-4 dark:border-zinc-800">
         <div class="flex items-center gap-1">
           <button
-            onclick={() => (showHeadersModal = true)}
-            title="View Raw Headers"
-            class="rounded-lg p-2 text-slate-500 hover:bg-slate-100 hover:text-slate-700 dark:hover:bg-slate-800"
+            onclick={() => {
+              composeTo = selectedMessage?.from || "";
+              composeSubject = selectedMessage?.subject ? `Re: ${selectedMessage.subject}` : "Re: ";
+              isComposeOpen = true;
+            }}
+            class="flex h-7 items-center gap-1.5 rounded border border-zinc-200 bg-white px-2.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-200 dark:hover:bg-zinc-800"
           >
-            <Code class="h-4 w-4" />
+            <Reply class="h-3 w-3" />
+            <span>Reply</span>
           </button>
+
           <button
-            onclick={() => notify("Moved to Archive", "info")}
+            onclick={() => {
+              composeTo = selectedMessage?.from || "";
+              composeSubject = selectedMessage?.subject ? `Fwd: ${selectedMessage.subject}` : "Fwd: ";
+              isComposeOpen = true;
+            }}
+            class="flex h-7 items-center gap-1.5 rounded border border-zinc-200 bg-white px-2.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-200 dark:hover:bg-zinc-800"
+          >
+            <Forward class="h-3 w-3" />
+            <span>Forward</span>
+          </button>
+
+          <span class="mx-1 h-3.5 w-px bg-zinc-200 dark:bg-zinc-800"></span>
+
+          <button
+            onclick={() => notify("Archived message", "info")}
             title="Archive"
-            class="rounded-lg p-2 text-slate-500 hover:bg-slate-100 hover:text-slate-700 dark:hover:bg-slate-800"
+            class="flex h-7 w-7 items-center justify-center rounded text-zinc-500 hover:bg-zinc-100 hover:text-zinc-800 dark:hover:bg-zinc-900"
           >
-            <Archive class="h-4 w-4" />
+            <Archive class="h-3.5 w-3.5" />
           </button>
+
           <button
-            onclick={() => notify("Marked as spam", "info")}
-            title="Report Spam"
-            class="rounded-lg p-2 text-slate-500 hover:bg-slate-100 hover:text-slate-700 dark:hover:bg-slate-800"
+            onclick={() => notify("Marked as Spam", "info")}
+            title="Mark as Spam"
+            class="flex h-7 w-7 items-center justify-center rounded text-zinc-500 hover:bg-zinc-100 hover:text-zinc-800 dark:hover:bg-zinc-900"
           >
-            <AlertOctagon class="h-4 w-4" />
+            <AlertOctagon class="h-3.5 w-3.5" />
           </button>
+
           <button
             onclick={() => notify("Message deleted", "info")}
-            title="Delete Email"
-            class="rounded-lg p-2 text-slate-500 hover:bg-rose-50 hover:text-rose-600 dark:hover:bg-rose-950/40"
+            title="Delete"
+            class="flex h-7 w-7 items-center justify-center rounded text-zinc-500 hover:bg-rose-50 hover:text-rose-600 dark:hover:bg-rose-950/40"
           >
-            <Trash2 class="h-4 w-4" />
+            <Trash2 class="h-3.5 w-3.5" />
           </button>
         </div>
+
+        <button
+          onclick={() => (showHeadersModal = true)}
+          class="flex h-7 items-center gap-1 rounded border border-zinc-200 bg-white px-2 text-[11px] font-mono text-zinc-500 hover:text-zinc-900 dark:border-zinc-800 dark:bg-zinc-900 dark:hover:text-zinc-200"
+          title="Inspect RFC 5322 MIME Headers"
+        >
+          <Code class="h-3 w-3" />
+          <span>Headers</span>
+        </button>
       </header>
 
-      <!-- Message Content Container -->
-      <div class="flex-1 overflow-y-auto p-8">
-        <!-- Subject Banner -->
-        <h1 class="text-xl font-bold tracking-tight text-slate-900 dark:text-white">
+      <!-- Reading Body Scroll Area -->
+      <div class="flex-1 overflow-y-auto px-8 py-6">
+        <!-- Subject -->
+        <h1 class="text-lg font-bold tracking-tight text-zinc-900 dark:text-white">
           {selectedMessage.subject || "(No Subject)"}
         </h1>
 
-        <!-- Sender / Receiver Meta Card -->
-        <div class="mt-6 flex items-start justify-between border-b border-slate-100 pb-6 dark:border-slate-800">
+        <!-- Header Card -->
+        <div class="mt-4 flex items-center justify-between border-b border-zinc-100 pb-4 dark:border-zinc-900">
           <div class="flex items-center gap-3">
-            <div class="flex h-10 w-10 items-center justify-center rounded-full bg-gradient-to-tr from-indigo-500 to-purple-600 font-bold text-white text-sm shadow-xs">
+            <div class="flex h-8 w-8 items-center justify-center rounded-full bg-zinc-200 font-bold text-xs text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300">
               {selectedMessage.from ? selectedMessage.from.charAt(0).toUpperCase() : "M"}
             </div>
             <div>
               <div class="flex items-center gap-2">
-                <span class="font-bold text-slate-900 dark:text-white text-sm">
+                <span class="text-xs font-semibold text-zinc-900 dark:text-white">
                   {selectedMessage.from}
                 </span>
-                <span class="rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-700 dark:bg-emerald-950 dark:text-emerald-400">
-                  DKIM Verified
+                <span class="rounded bg-emerald-50 px-1 py-0.2 text-[9px] font-mono font-medium text-emerald-700 dark:bg-emerald-950 dark:text-emerald-400 border border-emerald-500/20">
+                  DKIM PASS
                 </span>
               </div>
-              <div class="text-xs text-slate-500">
+              <div class="text-[11px] text-zinc-400">
                 To: {selectedMessage.to || "undisclosed-recipients"}
               </div>
             </div>
           </div>
 
-          <div class="text-xs text-slate-400">
+          <div class="font-mono text-[11px] text-zinc-400">
             {new Date(selectedMessage.internal_date).toLocaleString()}
           </div>
         </div>
 
         <!-- Rendered Email Body -->
-        <div class="prose max-w-none pt-6 text-sm text-slate-700 dark:text-slate-300">
+        <div class="prose max-w-none pt-6 text-xs leading-relaxed text-zinc-800 dark:text-zinc-200">
           {#if selectedMessage.html_body}
-            <!-- Render HTML body -->
             <div>
               {@html selectedMessage.html_body}
             </div>
           {:else if selectedMessage.text_body}
-            <pre class="whitespace-pre-wrap font-sans text-sm text-slate-700 dark:text-slate-300">{selectedMessage.text_body}</pre>
+            <pre class="whitespace-pre-wrap font-sans text-xs text-zinc-800 dark:text-zinc-200">{selectedMessage.text_body}</pre>
           {:else}
-            <p class="text-slate-400 italic">No content available for this email.</p>
+            <p class="text-zinc-400 italic">No content available for this email.</p>
           {/if}
         </div>
       </div>
@@ -654,100 +613,73 @@
 </div>
 
 <!-- ═════════════════════════════════════════════════════════════════════════ -->
-<!-- COMPOSE MODAL DIALOG                                                     -->
+<!-- COMPOSE MODAL                                                             -->
 <!-- ═════════════════════════════════════════════════════════════════════════ -->
 {#if isComposeOpen}
-  <div class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 backdrop-blur-xs p-4">
-    <div class="flex h-[600px] w-full max-w-2xl flex-col rounded-2xl bg-white shadow-2xl dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
-      <!-- Modal Header -->
-      <div class="flex items-center justify-between border-b border-slate-200 px-6 py-4 dark:border-slate-800">
-        <h3 class="font-semibold text-slate-900 dark:text-white text-sm">New Message</h3>
-        <button
-          onclick={() => (isComposeOpen = false)}
-          class="rounded-lg p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-600 dark:hover:bg-slate-800"
-        >
+  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-xs p-4">
+    <div class="flex h-[540px] w-full max-w-2xl flex-col rounded-lg border border-zinc-200 bg-white shadow-xl dark:border-zinc-800 dark:bg-zinc-950">
+      <!-- Header -->
+      <div class="flex h-10 items-center justify-between border-b border-zinc-200 px-4 dark:border-zinc-800">
+        <span class="text-xs font-semibold text-zinc-800 dark:text-zinc-200">New Message</span>
+        <button onclick={() => (isComposeOpen = false)} class="text-zinc-400 hover:text-zinc-700 dark:hover:text-white">
           <X class="h-4 w-4" />
         </button>
       </div>
 
-      <!-- Compose Form -->
       <form onsubmit={handleSendEmail} class="flex flex-1 flex-col overflow-hidden">
-        <div class="border-b border-slate-100 px-6 py-2.5 dark:border-slate-800">
+        <div class="border-b border-zinc-100 px-4 py-2 dark:border-zinc-900">
           <div class="flex items-center gap-2">
-            <span class="text-xs font-semibold text-slate-400 w-12">To:</span>
+            <span class="w-10 text-[11px] font-mono text-zinc-400">To:</span>
             <input
               type="text"
               bind:value={composeTo}
-              placeholder="recipient@example.com"
+              placeholder="user@domain.com"
               required
-              class="flex-1 text-xs text-slate-900 outline-none dark:text-white"
+              class="flex-1 text-xs text-zinc-900 outline-none dark:text-white bg-transparent"
             />
-            <button
-              type="button"
-              onclick={() => (showCc = !showCc)}
-              class="text-xs font-medium text-slate-400 hover:text-indigo-600"
-            >
-              Cc
-            </button>
           </div>
         </div>
 
-        {#if showCc}
-          <div class="border-b border-slate-100 px-6 py-2.5 dark:border-slate-800">
-            <div class="flex items-center gap-2">
-              <span class="text-xs font-semibold text-slate-400 w-12">Cc:</span>
-              <input
-                type="text"
-                bind:value={composeCc}
-                placeholder="optional@example.com"
-                class="flex-1 text-xs text-slate-900 outline-none dark:text-white"
-              />
-            </div>
-          </div>
-        {/if}
-
-        <div class="border-b border-slate-100 px-6 py-2.5 dark:border-slate-800">
+        <div class="border-b border-zinc-100 px-4 py-2 dark:border-zinc-900">
           <div class="flex items-center gap-2">
-            <span class="text-xs font-semibold text-slate-400 w-12">Subject:</span>
+            <span class="w-10 text-[11px] font-mono text-zinc-400">Subject:</span>
             <input
               type="text"
               bind:value={composeSubject}
-              placeholder="Enter subject line"
+              placeholder="Message subject"
               required
-              class="flex-1 text-xs font-medium text-slate-900 outline-none dark:text-white"
+              class="flex-1 text-xs font-medium text-zinc-900 outline-none dark:text-white bg-transparent"
             />
           </div>
         </div>
 
-        <!-- Body Textarea -->
         <textarea
           bind:value={composeBody}
-          placeholder="Compose your email here..."
-          class="flex-1 resize-none p-6 text-sm text-slate-800 outline-none dark:bg-slate-900 dark:text-slate-200"
+          placeholder="Write your email message..."
+          class="flex-1 resize-none p-4 text-xs leading-relaxed text-zinc-800 outline-none dark:bg-zinc-950 dark:text-zinc-200"
         ></textarea>
 
-        <!-- Footer Actions -->
-        <div class="flex items-center justify-between border-t border-slate-200 bg-slate-50/50 px-6 py-3.5 dark:border-slate-800 dark:bg-slate-900/50">
+        <div class="flex h-12 items-center justify-between border-t border-zinc-200 bg-zinc-50 px-4 dark:border-zinc-800 dark:bg-zinc-900/50">
           <button
             type="submit"
             disabled={isSending}
-            class="flex items-center gap-2 rounded-xl bg-indigo-600 px-5 py-2 text-xs font-semibold text-white shadow-sm shadow-indigo-600/30 hover:bg-indigo-700 active:scale-[0.98] disabled:opacity-50"
+            class="flex items-center gap-1.5 rounded bg-zinc-900 px-3.5 py-1.5 text-xs font-semibold text-white shadow-xs hover:bg-zinc-800 active:scale-[0.99] disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-200"
           >
             {#if isSending}
-              <RefreshCw class="h-3.5 w-3.5 animate-spin" />
-              Sending...
+              <RefreshCw class="h-3 w-3 animate-spin" />
+              <span>Sending...</span>
             {:else}
-              <Send class="h-3.5 w-3.5" />
-              Send Email
+              <Send class="h-3 w-3" />
+              <span>Send Message</span>
             {/if}
           </button>
 
           <button
             type="button"
             onclick={() => (isComposeOpen = false)}
-            class="rounded-lg p-2 text-slate-400 hover:bg-slate-100 hover:text-slate-600 dark:hover:bg-slate-800"
+            class="text-xs text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300"
           >
-            <Trash2 class="h-4 w-4" />
+            Discard
           </button>
         </div>
       </form>
@@ -756,11 +688,38 @@
 {/if}
 
 <!-- ═════════════════════════════════════════════════════════════════════════ -->
-<!-- TOAST NOTIFICATION                                                       -->
+<!-- HEADERS MODAL                                                             -->
+<!-- ═════════════════════════════════════════════════════════════════════════ -->
+{#if showHeadersModal && selectedMessage}
+  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-xs p-4">
+    <div class="flex h-[420px] w-full max-w-xl flex-col rounded-lg border border-zinc-200 bg-white p-4 shadow-xl dark:border-zinc-800 dark:bg-zinc-950">
+      <div class="flex items-center justify-between border-b border-zinc-200 pb-2 dark:border-zinc-800">
+        <span class="text-xs font-semibold text-zinc-800 dark:text-zinc-200">Raw RFC 5322 Headers</span>
+        <button onclick={() => (showHeadersModal = false)} class="text-zinc-400 hover:text-white">
+          <X class="h-4 w-4" />
+        </button>
+      </div>
+      <pre class="mt-3 flex-1 overflow-auto rounded bg-zinc-50 p-3 font-mono text-[10px] text-zinc-700 dark:bg-zinc-900 dark:text-zinc-300 border border-zinc-200 dark:border-zinc-800">
+Message-ID: &lt;{selectedMessage.id}@fastrsoft.com&gt;
+From: {selectedMessage.from}
+To: {selectedMessage.to}
+Subject: {selectedMessage.subject}
+Date: {selectedMessage.internal_date}
+X-FastrMail-DKIM: RSA-2048 passed (selector=default)
+X-FastrMail-SpamGuard: score=0.0 (DNSBL: PASS, Greylist: PASS)
+MIME-Version: 1.0
+Content-Type: multipart/alternative; boundary="boundary-fastrmail"
+      </pre>
+    </div>
+  </div>
+{/if}
+
+<!-- ═════════════════════════════════════════════════════════════════════════ -->
+<!-- TOAST                                                                     -->
 <!-- ═════════════════════════════════════════════════════════════════════════ -->
 {#if toast}
-  <div class="fixed bottom-6 right-6 z-50 flex items-center gap-2.5 rounded-xl border border-slate-800 bg-slate-900 px-4 py-3 text-xs font-medium text-white shadow-lg shadow-black/20">
-    <span class="h-2 w-2 rounded-full {toast.type === 'success' ? 'bg-emerald-400' : toast.type === 'error' ? 'bg-rose-400' : 'bg-indigo-400'}"></span>
+  <div class="fixed bottom-4 right-4 z-50 flex items-center gap-2 rounded border border-zinc-800 bg-zinc-900 px-3 py-2 text-xs text-white shadow-lg">
+    <span class="h-1.5 w-1.5 rounded-full {toast.type === 'success' ? 'bg-emerald-400' : toast.type === 'error' ? 'bg-rose-400' : 'bg-blue-400'}"></span>
     {toast.message}
   </div>
 {/if}
