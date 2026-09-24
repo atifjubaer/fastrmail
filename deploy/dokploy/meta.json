@@ -1,0 +1,13 @@
+{
+  "id": "fastrmail",
+  "name": "FastrMail",
+  "version": "1.0.0",
+  "description": "Enterprise-grade single-binary mail server built in Rust with SMTP, IMAP4rev2, POP3, JMAP, Sieve, and Lucene search.",
+  "logo": "fastrmail.svg",
+  "links": {
+    "github": "https://github.com/atifjubaer/fastrmail",
+    "website": "https://fastrmail-landing.vercel.app",
+    "docs": "https://fastrmail-landing.vercel.app"
+  },
+  "tags": ["mail", "email", "smtp", "imap", "rust"]
+}

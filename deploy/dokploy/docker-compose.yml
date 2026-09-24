@@ -1,0 +1,34 @@
+services:
+  fastrmail:
+    image: ghcr.io/atifjubaer/fastrmail:latest
+    restart: unless-stopped
+    ports:
+      - "${SMTP_PORT:-25}:2525"
+      - "${SMTP_SUBMISSION_PORT:-587}:2526"
+      - "${IMAP_PORT:-143}:1143"
+      - "${POP3_PORT:-110}:1110"
+    expose:
+      - "8080"
+    environment:
+      - RUST_LOG=info
+      - FASTRMAIL_DATA_DIR=/app/data
+      - FASTRMAIL_BIND_SMTP=0.0.0.0:2525
+      - FASTRMAIL_BIND_SUBMISSION=0.0.0.0:2526
+      - FASTRMAIL_BIND_IMAP=0.0.0.0:1143
+      - FASTRMAIL_BIND_POP3=0.0.0.0:1110
+      - FASTRMAIL_BIND_HTTP=0.0.0.0:8080
+      - FASTRMAIL_HOSTNAME=${FASTRMAIL_HOSTNAME}
+      - FASTRMAIL_PRIMARY_DOMAIN=${FASTRMAIL_PRIMARY_DOMAIN}
+      - FASTRMAIL_ADMIN_USER=${FASTRMAIL_ADMIN_USER}
+      - FASTRMAIL_ADMIN_PASS=${FASTRMAIL_ADMIN_PASS}
+    volumes:
+      - fastrmail_data:/app/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/api/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+volumes:
+  fastrmail_data:

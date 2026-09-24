@@ -1,0 +1,42 @@
+# Documentation: https://coolify.io/docs
+# FastrMail — Enterprise-grade single-binary mail server built in Rust
+services:
+  fastrmail:
+    image: ghcr.io/atifjubaer/fastrmail:latest
+    restart: unless-stopped
+    ports:
+      - "${SMTP_PORT:-25}:2525"
+      - "${SMTP_SUBMISSION_PORT:-587}:2526"
+      - "${IMAP_PORT:-143}:1143"
+      - "${POP3_PORT:-110}:1110"
+    expose:
+      - "8080"
+    environment:
+      - RUST_LOG=info
+      - FASTRMAIL_DATA_DIR=/app/data
+      - FASTRMAIL_BIND_SMTP=0.0.0.0:2525
+      - FASTRMAIL_BIND_SUBMISSION=0.0.0.0:2526
+      - FASTRMAIL_BIND_IMAP=0.0.0.0:1143
+      - FASTRMAIL_BIND_POP3=0.0.0.0:1110
+      - FASTRMAIL_BIND_HTTP=0.0.0.0:8080
+      - FASTRMAIL_HOSTNAME=${SERVICE_FQDN_FASTRMAIL:-mail.example.com}
+      - FASTRMAIL_PRIMARY_DOMAIN=${FASTRMAIL_PRIMARY_DOMAIN:-example.com}
+      - FASTRMAIL_ADMIN_USER=${SERVICE_USER_ADMIN:-admin}
+      - FASTRMAIL_ADMIN_PASS=${SERVICE_PASSWORD_ADMIN}
+    volumes:
+      - fastrmail-data:/app/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/api/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    labels:
+      - "coolify.managed=true"
+      - "coolify.tcp.port.2525=25"
+      - "coolify.tcp.port.2526=587"
+      - "coolify.tcp.port.1143=143"
+      - "coolify.tcp.port.1110=110"
+
+volumes:
+  fastrmail-data:

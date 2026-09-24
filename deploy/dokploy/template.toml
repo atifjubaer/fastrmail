@@ -1,0 +1,29 @@
+[variables]
+main_domain = "${domain}"
+admin_password = "${password:32}"
+
+[[config.domains]]
+service = "fastrmail"
+port = 8080
+host = "${main_domain}"
+path = "/"
+
+[[config.env]]
+service = "fastrmail"
+key = "FASTRMAIL_HOSTNAME"
+value = "${main_domain}"
+
+[[config.env]]
+service = "fastrmail"
+key = "FASTRMAIL_PRIMARY_DOMAIN"
+value = "${main_domain}"
+
+[[config.env]]
+service = "fastrmail"
+key = "FASTRMAIL_ADMIN_USER"
+value = "admin"
+
+[[config.env]]
+service = "fastrmail"
+key = "FASTRMAIL_ADMIN_PASS"
+value = "${admin_password}"
