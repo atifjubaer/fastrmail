@@ -7,7 +7,7 @@ members = [
     "crates/fastrmail-core",
     "crates/fastrmail-auth",
     "crates/fastrmail-store",
-    "crates/fastrmail-search",
+    "crates/fastrmail-search", "crates/fastrmail-pop3",
 ]
 resolver = "2"
 

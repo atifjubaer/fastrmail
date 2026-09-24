@@ -560,6 +560,13 @@ impl Database {
         Ok(deleted)
     }
 
+    /// Delete a single message permanently by its ID.
+    pub fn delete_message(&self, message_id: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM messages WHERE id = ?1", params![message_id])?;
+        Ok(())
+    }
+
     /// Get total message count and unseen message count for a mailbox.
     pub fn get_mailbox_counts(&self, mailbox_id: &str) -> Result<(i64, i64)> {
         let conn = self.conn.lock().unwrap();

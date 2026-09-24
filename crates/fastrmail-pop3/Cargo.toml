@@ -1,0 +1,15 @@
+[package]
+name = "fastrmail-pop3"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "POP3 RFC 1939 protocol engine for FastrMail"
+
+[dependencies]
+fastrmail-core = { path = "../fastrmail-core" }
+fastrmail-store = { path = "../fastrmail-store" }
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+uuid = { version = "1", features = ["v4"] }
+anyhow = "1"
