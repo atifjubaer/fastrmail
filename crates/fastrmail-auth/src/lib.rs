@@ -306,6 +306,7 @@ pub fn verify_password(password: &str, hash: &str) -> Result<bool> {
 pub struct DnsblVerifier {
     zones: Vec<String>,
     resolver: TokioAsyncResolver,
+    mock_blocked: bool,
 }
 
 impl Default for DnsblVerifier {
@@ -329,7 +330,24 @@ impl DnsblVerifier {
             ResolverConfig::cloudflare(),
             ResolverOpts::default(),
         );
-        Self { zones, resolver }
+        Self {
+            zones,
+            resolver,
+            mock_blocked: false,
+        }
+    }
+
+    /// Create a mock DNSBL verifier that always simulates a blocked IP (for testing).
+    pub fn mock_blocked() -> Self {
+        let resolver = TokioAsyncResolver::tokio(
+            ResolverConfig::cloudflare(),
+            ResolverOpts::default(),
+        );
+        Self {
+            zones: Vec::new(),
+            resolver,
+            mock_blocked: true,
+        }
     }
 
     /// Check if the given IP address is listed on any of the configured DNSBL zones.
@@ -339,6 +357,10 @@ impl DnsblVerifier {
     /// the IP is considered blocked (returns `Ok(true)`).
     /// If NXDOMAIN or clean, returns `Ok(false)`.
     pub async fn check_ip(&self, ip: IpAddr) -> Result<bool> {
+        if self.mock_blocked {
+            info!("DNSBL mock triggered: blocking IP {ip}");
+            return Ok(true);
+        }
         let reversed = match ip {
             IpAddr::V4(v4) => {
                 let o = v4.octets();
