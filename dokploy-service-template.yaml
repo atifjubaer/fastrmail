@@ -5,14 +5,10 @@
 # Import this file in Dokploy > Applications > Docker Compose to auto-provision.
 # ==============================================================================
 
-version: "3.8"
-
 services:
   fastrmail:
-    # build:
-    #   context: .
-    #   dockerfile: Dockerfile
     image: ghcr.io/atifjubaer/fastrmail:latest
+    platform: linux/amd64
     container_name: fastrmail
     restart: unless-stopped
 
