@@ -19,7 +19,7 @@ RUN cd web/admin && npm run build
 # ==============================================================================
 # Stage 2: Build Rust Backend
 # ==============================================================================
-FROM rust:1.81-alpine AS backend-builder
+FROM rust:alpine AS backend-builder
 
 # Install required build toolchain including cmake, perl, clang, and linux-headers for Tantivy & Tokio sys-crates
 RUN apk add --no-cache musl-dev sqlite-dev openssl-dev build-base pkgconfig cmake perl clang lld linux-headers
@@ -45,7 +45,7 @@ RUN cargo build --release -p fastrmail-binary
 # ==============================================================================
 # Stage 3: Minimal Production Runtime
 # ==============================================================================
-FROM alpine:3.20 AS runtime
+FROM alpine:latest AS runtime
 RUN apk add --no-cache ca-certificates tzdata sqlite-libs libgcc libstdc++ wget
 
 WORKDIR /app
