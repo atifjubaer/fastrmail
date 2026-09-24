@@ -7,6 +7,8 @@ use argon2::{
     password_hash::{rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
     Argon2,
 };
+use hickory_resolver::config::{ResolverConfig, ResolverOpts};
+use hickory_resolver::TokioAsyncResolver;
 use mail_auth::{
     common::{
         crypto::{RsaKey, Sha256},
@@ -298,6 +300,91 @@ pub fn verify_password(password: &str, hash: &str) -> Result<bool> {
         .is_ok())
 }
 
+// ─── DNSBL Verifier (Spam Guard) ─────────────────────────────
+
+/// Real-time DNS Blocklist (DNSBL) verifier for inbound IP reputation checking.
+pub struct DnsblVerifier {
+    zones: Vec<String>,
+    resolver: TokioAsyncResolver,
+}
+
+impl Default for DnsblVerifier {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl DnsblVerifier {
+    /// Create a new DNSBL verifier with default blocklist zones.
+    pub fn new() -> Self {
+        Self::with_zones(vec![
+            "zen.spamhaus.org".to_string(),
+            "b.barracudacentral.org".to_string(),
+        ])
+    }
+
+    /// Create a new DNSBL verifier with a custom list of zones.
+    pub fn with_zones(zones: Vec<String>) -> Self {
+        let resolver = TokioAsyncResolver::tokio(
+            ResolverConfig::cloudflare(),
+            ResolverOpts::default(),
+        );
+        Self { zones, resolver }
+    }
+
+    /// Check if the given IP address is listed on any of the configured DNSBL zones.
+    ///
+    /// Reverses the IP address octets (e.g. `1.2.3.4` -> `4.3.2.1.<zone>`)
+    /// and performs an `A` record query. If any `127.0.0.x` response is returned,
+    /// the IP is considered blocked (returns `Ok(true)`).
+    /// If NXDOMAIN or clean, returns `Ok(false)`.
+    pub async fn check_ip(&self, ip: IpAddr) -> Result<bool> {
+        let reversed = match ip {
+            IpAddr::V4(v4) => {
+                let o = v4.octets();
+                format!("{}.{}.{}.{}", o[3], o[2], o[1], o[0])
+            }
+            IpAddr::V6(v6) => {
+                let mut nibbles = Vec::with_capacity(32);
+                for seg in v6.segments().iter() {
+                    for nibble in format!("{:04x}", seg).chars() {
+                        nibbles.push(nibble);
+                    }
+                }
+                nibbles.reverse();
+                nibbles
+                    .iter()
+                    .map(|c| c.to_string())
+                    .collect::<Vec<_>>()
+                    .join(".")
+            }
+        };
+
+        for zone in &self.zones {
+            let lookup_host = format!("{reversed}.{zone}.");
+            debug!("Querying DNSBL: {lookup_host}");
+            match self.resolver.ipv4_lookup(&lookup_host).await {
+                Ok(lookup) => {
+                    for record in lookup.iter() {
+                        let octets = record.octets();
+                        // Per RFC 5782, DNSBL return codes for listed IP addresses are in 127.0.0.x (e.g. 127.0.0.2 - 127.0.0.127).
+                        // IPs like 127.255.255.x are query refusal / rate-limit notices by providers and not spam listings.
+                        if octets[0] == 127 && octets[1] == 0 && octets[2] == 0 && octets[3] >= 2 {
+                            info!("IP {ip} is listed on DNSBL {zone}: {record}");
+                            return Ok(true);
+                        }
+                    }
+                }
+                Err(e) => {
+                    debug!("DNSBL lookup for {lookup_host} clean or unlisted: {e}");
+                }
+            }
+        }
+
+        Ok(false)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -418,5 +505,21 @@ mod tests {
             .await
             .unwrap();
         assert!(result.pass, "Aligned SPF must pass DMARC");
+    }
+
+    #[tokio::test]
+    async fn test_dnsbl_safe_ip() {
+        let verifier = DnsblVerifier::new();
+        let safe_ip: IpAddr = "8.8.8.8".parse().unwrap();
+        let is_blocked = verifier.check_ip(safe_ip).await.unwrap_or(false);
+        assert!(!is_blocked, "8.8.8.8 must not be blocked on standard DNSBLs");
+    }
+
+    #[tokio::test]
+    async fn test_dnsbl_empty_zones() {
+        let verifier = DnsblVerifier::with_zones(vec![]);
+        let ip: IpAddr = "192.0.2.1".parse().unwrap();
+        let is_blocked = verifier.check_ip(ip).await.unwrap();
+        assert!(!is_blocked, "Empty zones must always return unblocked");
     }
 }
