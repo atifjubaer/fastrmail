@@ -45,6 +45,7 @@ export default defineConfig({
         items: [
           { text: 'REST API & Webmail Endpoints', link: '/guide/api-reference' },
           { text: 'CLI Management Commands', link: '/guide/cli' },
+          { text: 'Templates & App Store Publishing', link: '/guide/templates' },
         ],
       },
     ],
