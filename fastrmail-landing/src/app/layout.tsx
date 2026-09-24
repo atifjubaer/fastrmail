@@ -33,7 +33,7 @@ export const metadata: Metadata = {
     description:
       "A single-binary Rust mail server with SMTP, IMAP4rev2, JMAP, full-text search, and built-in spam defense. Free forever.",
     type: "website",
-    url: "https://fastrmail.vercel.app",
+    url: "https://fastrmail-landing.vercel.app",
   },
 };
 

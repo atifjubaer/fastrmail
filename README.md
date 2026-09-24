@@ -21,8 +21,8 @@
   </p>
 
   <p>
-    <a href="https://fastrmail.vercel.app"><strong>🌐 Website</strong></a> •
-    <a href="https://fastrmail.vercel.app"><strong>📖 Documentation</strong></a> •
+    <a href="https://fastrmail-landing.vercel.app"><strong>🌐 Website</strong></a> •
+    <a href="https://fastrmail-landing.vercel.app"><strong>📖 Documentation</strong></a> •
     <a href="#-enterprise-protocol-matrix"><strong>Protocols</strong></a> •
     <a href="#-feature-comparison-matrix"><strong>Comparison</strong></a> •
     <a href="#-quick-start"><strong>Quick Start</strong></a> •

@@ -94,7 +94,7 @@ export default async function LandingPage() {
             <a href="#protocols" className="text-sm text-muted-foreground hover:text-foreground transition-colors">Protocols</a>
             <a href="#comparison" className="text-sm text-muted-foreground hover:text-foreground transition-colors">Compare</a>
             <a href="#deploy" className="text-sm text-muted-foreground hover:text-foreground transition-colors">Deploy</a>
-            <a href="https://fastrmail.vercel.app" target="_blank" rel="noopener noreferrer" className="text-sm text-muted-foreground hover:text-foreground transition-colors flex items-center gap-1">
+            <a href="https://fastrmail-landing.vercel.app" target="_blank" rel="noopener noreferrer" className="text-sm text-muted-foreground hover:text-foreground transition-colors flex items-center gap-1">
               <BookOpen className="h-4 w-4" /> Docs
             </a>
             <a href="https://github.com/atifjubaer/fastrmail" target="_blank" rel="noopener noreferrer" className="text-sm text-muted-foreground hover:text-foreground transition-colors flex items-center gap-1">
@@ -159,7 +159,7 @@ export default async function LandingPage() {
                 {stats.stars > 0 && <span className="text-xs bg-muted px-2 py-0.5 rounded font-mono">★ {stats.stars}</span>}
               </Button>
             </a>
-            <a href="https://fastrmail.vercel.app" target="_blank" rel="noopener noreferrer">
+            <a href="https://fastrmail-landing.vercel.app" target="_blank" rel="noopener noreferrer">
               <Button variant="ghost" size="lg" className="text-base px-6 h-12 gap-2">
                 <BookOpen className="h-4 w-4" /> Documentation
               </Button>
@@ -449,7 +449,7 @@ docker compose up -d`}</code>
             {[
               { name: "Dokploy Template", href: "https://github.com/atifjubaer/fastrmail/blob/main/dokploy-service-template.yaml" },
               { name: "Docker Compose", href: "https://github.com/atifjubaer/fastrmail/blob/main/docker-compose.yml" },
-              { name: "Documentation", href: "https://fastrmail.vercel.app" },
+              { name: "Documentation", href: "https://fastrmail-landing.vercel.app" },
               { name: "GitHub Repository", href: "https://github.com/atifjubaer/fastrmail" },
             ].map((platform) => (
               <a key={platform.name} href={platform.href} target="_blank" rel="noopener noreferrer">
@@ -477,7 +477,7 @@ docker compose up -d`}</code>
               <a href="https://github.com/atifjubaer/fastrmail" className="hover:text-foreground transition-colors flex items-center gap-1">
                 <GithubIcon className="h-4 w-4" /> GitHub
               </a>
-              <a href="https://fastrmail.vercel.app" className="hover:text-foreground transition-colors">
+              <a href="https://fastrmail-landing.vercel.app" className="hover:text-foreground transition-colors">
                 Docs
               </a>
               <a href="https://github.com/atifjubaer/fastrmail/blob/main/LICENSE" className="hover:text-foreground transition-colors">
