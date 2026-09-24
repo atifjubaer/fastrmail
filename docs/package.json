@@ -1,0 +1,15 @@
+{
+  "name": "fastrmail-docs",
+  "version": "1.0.0",
+  "private": true,
+  "description": "FastrMail Documentation - Modern Single-Binary Mail Server in Rust",
+  "scripts": {
+    "docs:dev": "vitepress dev",
+    "docs:build": "vitepress build",
+    "docs:preview": "vitepress preview",
+    "build": "vitepress build"
+  },
+  "devDependencies": {
+    "vitepress": "^1.5.0"
+  }
+}

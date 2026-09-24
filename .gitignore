@@ -7,6 +7,8 @@ Cargo.lock
 node_modules/
 web/admin/dist/
 web/webmail/dist/
+docs/.vitepress/dist/
+docs/.vitepress/cache/
 
 # Data
 /data/
