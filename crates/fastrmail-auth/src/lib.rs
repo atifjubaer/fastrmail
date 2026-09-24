@@ -99,9 +99,9 @@ impl DkimVerifier {
         };
 
         let outputs = resolver.verify_dkim(&authenticated_message).await;
-        let pass = outputs.iter().any(|output| {
-            matches!(output.result(), mail_auth::DkimResult::Pass)
-        });
+        let pass = outputs
+            .iter()
+            .any(|output| matches!(output.result(), mail_auth::DkimResult::Pass));
 
         debug!(
             "DKIM verification: domain={}, selector={}, pass={}",
@@ -326,10 +326,8 @@ impl DnsblVerifier {
 
     /// Create a new DNSBL verifier with a custom list of zones.
     pub fn with_zones(zones: Vec<String>) -> Self {
-        let resolver = TokioAsyncResolver::tokio(
-            ResolverConfig::cloudflare(),
-            ResolverOpts::default(),
-        );
+        let resolver =
+            TokioAsyncResolver::tokio(ResolverConfig::cloudflare(), ResolverOpts::default());
         Self {
             zones,
             resolver,
@@ -339,10 +337,8 @@ impl DnsblVerifier {
 
     /// Create a mock DNSBL verifier that always simulates a blocked IP (for testing).
     pub fn mock_blocked() -> Self {
-        let resolver = TokioAsyncResolver::tokio(
-            ResolverConfig::cloudflare(),
-            ResolverOpts::default(),
-        );
+        let resolver =
+            TokioAsyncResolver::tokio(ResolverConfig::cloudflare(), ResolverOpts::default());
         Self {
             zones: Vec::new(),
             resolver,
@@ -534,7 +530,10 @@ mod tests {
         let verifier = DnsblVerifier::new();
         let safe_ip: IpAddr = "8.8.8.8".parse().unwrap();
         let is_blocked = verifier.check_ip(safe_ip).await.unwrap_or(false);
-        assert!(!is_blocked, "8.8.8.8 must not be blocked on standard DNSBLs");
+        assert!(
+            !is_blocked,
+            "8.8.8.8 must not be blocked on standard DNSBLs"
+        );
     }
 
     #[tokio::test]

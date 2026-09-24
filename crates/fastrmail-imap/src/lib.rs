@@ -119,7 +119,7 @@ pub fn tokenize_imap_line(line: &str) -> Vec<String> {
             chars.next();
             let mut depth = 1;
             let mut s = String::new();
-            while let Some(c) = chars.next() {
+            for c in chars.by_ref() {
                 if c == '(' {
                     depth += 1;
                     s.push(c);
@@ -226,7 +226,10 @@ pub fn flags_to_json(flags: &[String]) -> String {
 
 /// Build an IMAP envelope structure string for a message.
 pub fn build_envelope(msg: &Message) -> String {
-    let date_str = msg.internal_date.format("%a, %d %b %Y %H:%M:%S +0000").to_string();
+    let date_str = msg
+        .internal_date
+        .format("%a, %d %b %Y %H:%M:%S +0000")
+        .to_string();
     let subject = msg.parsed_subject.as_deref().unwrap_or("No Subject");
 
     let from_addr = msg.parsed_from.as_deref().unwrap_or("unknown@localhost");
@@ -336,7 +339,10 @@ pub async fn handle_imap_connection(
 
                 if args.len() < 2 {
                     writer
-                        .write_all(format!("{tag} BAD LOGIN requires username and password\r\n").as_bytes())
+                        .write_all(
+                            format!("{tag} BAD LOGIN requires username and password\r\n")
+                                .as_bytes(),
+                        )
                         .await?;
                     writer.flush().await?;
                     continue;
@@ -362,7 +368,10 @@ pub async fn handle_imap_connection(
                     }
                     Ok(None) => {
                         writer
-                            .write_all(format!("{tag} NO [AUTHENTICATIONFAILED] Invalid credentials\r\n").as_bytes())
+                            .write_all(
+                                format!("{tag} NO [AUTHENTICATIONFAILED] Invalid credentials\r\n")
+                                    .as_bytes(),
+                            )
                             .await?;
                         writer.flush().await?;
                     }
@@ -433,13 +442,20 @@ pub async fn handle_imap_connection(
                             .await?;
                     } else {
                         writer
-                            .write_all(format!("{tag} NO [AUTHENTICATIONFAILED] Authentication failed\r\n").as_bytes())
+                            .write_all(
+                                format!(
+                                    "{tag} NO [AUTHENTICATIONFAILED] Authentication failed\r\n"
+                                )
+                                .as_bytes(),
+                            )
                             .await?;
                     }
                     writer.flush().await?;
                 } else {
                     writer
-                        .write_all(format!("{tag} NO Unsupported authentication mechanism\r\n").as_bytes())
+                        .write_all(
+                            format!("{tag} NO Unsupported authentication mechanism\r\n").as_bytes(),
+                        )
                         .await?;
                     writer.flush().await?;
                 }
@@ -497,7 +513,10 @@ pub async fn handle_imap_connection(
                             db.get_mailbox_by_id(&id)?.unwrap()
                         } else {
                             writer
-                                .write_all(format!("{tag} NO [NONEXISTENT] Mailbox does not exist\r\n").as_bytes())
+                                .write_all(
+                                    format!("{tag} NO [NONEXISTENT] Mailbox does not exist\r\n")
+                                        .as_bytes(),
+                                )
                                 .await?;
                             writer.flush().await?;
                             continue;
@@ -515,10 +534,14 @@ pub async fn handle_imap_connection(
                     .write_all(format!("* OK [UNSEEN {unseen}] Message unseen\r\n").as_bytes())
                     .await?;
                 writer
-                    .write_all(format!("* OK [UIDVALIDITY {}] UIDs valid\r\n", mb.uid_validity).as_bytes())
+                    .write_all(
+                        format!("* OK [UIDVALIDITY {}] UIDs valid\r\n", mb.uid_validity).as_bytes(),
+                    )
                     .await?;
                 writer
-                    .write_all(format!("* OK [UIDNEXT {}] Predicted next UID\r\n", mb.uid_next).as_bytes())
+                    .write_all(
+                        format!("* OK [UIDNEXT {}] Predicted next UID\r\n", mb.uid_next).as_bytes(),
+                    )
                     .await?;
                 writer
                     .write_all(b"* FLAGS (\\Answered \\Flagged \\Deleted \\Seen \\Draft)\r\n")
@@ -567,7 +590,10 @@ pub async fn handle_imap_connection(
                     Some(m) => m,
                     None => {
                         writer
-                            .write_all(format!("{tag} NO [NONEXISTENT] Mailbox does not exist\r\n").as_bytes())
+                            .write_all(
+                                format!("{tag} NO [NONEXISTENT] Mailbox does not exist\r\n")
+                                    .as_bytes(),
+                            )
                             .await?;
                         writer.flush().await?;
                         continue;
@@ -601,7 +627,10 @@ pub async fn handle_imap_connection(
                 }
 
                 writer
-                    .write_all(format!("* STATUS \"{}\" ({})\r\n", mb.name, status_parts.join(" ")).as_bytes())
+                    .write_all(
+                        format!("* STATUS \"{}\" ({})\r\n", mb.name, status_parts.join(" "))
+                            .as_bytes(),
+                    )
                     .await?;
                 writer
                     .write_all(format!("{tag} OK STATUS completed\r\n").as_bytes())
@@ -632,7 +661,10 @@ pub async fn handle_imap_connection(
                 let name = &args[0];
                 if db.get_mailbox_by_name(&account.id, name)?.is_some() {
                     writer
-                        .write_all(format!("{tag} NO [ALREADYEXISTS] Mailbox already exists\r\n").as_bytes())
+                        .write_all(
+                            format!("{tag} NO [ALREADYEXISTS] Mailbox already exists\r\n")
+                                .as_bytes(),
+                        )
                         .await?;
                 } else {
                     db.insert_mailbox(&account.id, name)?;
@@ -675,7 +707,9 @@ pub async fn handle_imap_connection(
                         .await?;
                 } else {
                     writer
-                        .write_all(format!("{tag} NO [NONEXISTENT] Mailbox not found\r\n").as_bytes())
+                        .write_all(
+                            format!("{tag} NO [NONEXISTENT] Mailbox not found\r\n").as_bytes(),
+                        )
                         .await?;
                 }
                 writer.flush().await?;
@@ -695,7 +729,9 @@ pub async fn handle_imap_connection(
 
                 if args.len() < 2 {
                     writer
-                        .write_all(format!("{tag} BAD RENAME requires old and new names\r\n").as_bytes())
+                        .write_all(
+                            format!("{tag} BAD RENAME requires old and new names\r\n").as_bytes(),
+                        )
                         .await?;
                     writer.flush().await?;
                     continue;
@@ -798,19 +834,14 @@ pub async fn handle_imap_connection(
                         // Might be UID STORE or unsupported UID command
                         if args.len() >= 3 && args[0].to_uppercase() == "STORE" {
                             // Forward to STORE logic
-                            handle_store_command(
-                                tag,
-                                &args[1..],
-                                true,
-                                &session,
-                                &db,
-                                &mut writer,
-                            )
-                            .await?;
+                            handle_store_command(tag, &args[1..], true, &session, &db, &mut writer)
+                                .await?;
                             continue;
                         } else {
                             writer
-                                .write_all(format!("{tag} BAD Invalid UID command syntax\r\n").as_bytes())
+                                .write_all(
+                                    format!("{tag} BAD Invalid UID command syntax\r\n").as_bytes(),
+                                )
                                 .await?;
                             writer.flush().await?;
                             continue;
@@ -821,7 +852,10 @@ pub async fn handle_imap_connection(
                 } else {
                     if args.len() < 2 {
                         writer
-                            .write_all(format!("{tag} BAD FETCH requires sequence set and items\r\n").as_bytes())
+                            .write_all(
+                                format!("{tag} BAD FETCH requires sequence set and items\r\n")
+                                    .as_bytes(),
+                            )
                             .await?;
                         writer.flush().await?;
                         continue;
@@ -876,7 +910,10 @@ pub async fn handle_imap_connection(
                     let flags_str = format_flags_for_imap(&msg.flags);
                     parts.push(format!("FLAGS ({flags_str})"));
 
-                    let internal_date = msg.internal_date.format("%d-%b-%Y %H:%M:%S +0000").to_string();
+                    let internal_date = msg
+                        .internal_date
+                        .format("%d-%b-%Y %H:%M:%S +0000")
+                        .to_string();
                     parts.push(format!("INTERNALDATE \"{internal_date}\""));
 
                     parts.push(format!("RFC822.SIZE {}", msg.size_bytes));
@@ -895,7 +932,10 @@ pub async fn handle_imap_connection(
                         let body_len = body_bytes.len();
 
                         // Write untagged header + literal
-                        let line_header = format!("* {seq} FETCH ({} BODY[] {{{body_len}}}\r\n", parts.join(" "));
+                        let line_header = format!(
+                            "* {seq} FETCH ({} BODY[] {{{body_len}}}\r\n",
+                            parts.join(" ")
+                        );
                         writer.write_all(line_header.as_bytes()).await?;
                         writer.write_all(&body_bytes).await?;
                         writer.write_all(b")\r\n").await?;
@@ -929,7 +969,9 @@ pub async fn handle_imap_connection(
 
                 if args.is_empty() {
                     writer
-                        .write_all(format!("{tag} BAD Missing APPEND mailbox argument\r\n").as_bytes())
+                        .write_all(
+                            format!("{tag} BAD Missing APPEND mailbox argument\r\n").as_bytes(),
+                        )
                         .await?;
                     writer.flush().await?;
                     continue;
@@ -1018,7 +1060,10 @@ pub async fn handle_imap_connection(
 
             _ => {
                 writer
-                    .write_all(format!("{tag} BAD Command not recognized or invalid syntax\r\n").as_bytes())
+                    .write_all(
+                        format!("{tag} BAD Command not recognized or invalid syntax\r\n")
+                            .as_bytes(),
+                    )
                     .await?;
                 writer.flush().await?;
             }
@@ -1039,7 +1084,9 @@ async fn handle_store_command<W: AsyncWriteExt + Unpin>(
 ) -> Result<()> {
     if args.len() < 3 {
         writer
-            .write_all(format!("{tag} BAD STORE requires sequence set, item, and flags\r\n").as_bytes())
+            .write_all(
+                format!("{tag} BAD STORE requires sequence set, item, and flags\r\n").as_bytes(),
+            )
             .await?;
         writer.flush().await?;
         return Ok(());
@@ -1164,7 +1211,10 @@ mod tests {
 
         let line_with_parens = r#"A02 STORE 1:5 +FLAGS (\Seen \Flagged)"#;
         let tokens = tokenize_imap_line(line_with_parens);
-        assert_eq!(tokens, vec!["A02", "STORE", "1:5", "+FLAGS", r#"\Seen \Flagged"#]);
+        assert_eq!(
+            tokens,
+            vec!["A02", "STORE", "1:5", "+FLAGS", r#"\Seen \Flagged"#]
+        );
     }
 
     #[test]
@@ -1279,7 +1329,10 @@ mod tests {
         assert!(line.starts_with("A05 OK [APPENDUID"));
 
         // 7. FETCH
-        writer.write_all(b"A06 FETCH 1 (FLAGS RFC822.SIZE)\r\n").await.unwrap();
+        writer
+            .write_all(b"A06 FETCH 1 (FLAGS RFC822.SIZE)\r\n")
+            .await
+            .unwrap();
         writer.flush().await.unwrap();
         line.clear();
         reader.read_line(&mut line).await.unwrap();
@@ -1289,7 +1342,10 @@ mod tests {
         assert!(line.starts_with("A06 OK FETCH completed"));
 
         // 8. STORE (mark Deleted)
-        writer.write_all(b"A07 STORE 1 +FLAGS (\\Deleted)\r\n").await.unwrap();
+        writer
+            .write_all(b"A07 STORE 1 +FLAGS (\\Deleted)\r\n")
+            .await
+            .unwrap();
         writer.flush().await.unwrap();
         line.clear();
         reader.read_line(&mut line).await.unwrap();
@@ -1379,7 +1435,10 @@ mod tests {
         assert!(line.starts_with("B03 OK CREATE completed"));
 
         // STATUS Work
-        writer.write_all(b"B04 STATUS \"Work\" (MESSAGES UNSEEN UIDNEXT)\r\n").await.unwrap();
+        writer
+            .write_all(b"B04 STATUS \"Work\" (MESSAGES UNSEEN UIDNEXT)\r\n")
+            .await
+            .unwrap();
         writer.flush().await.unwrap();
         line.clear();
         reader.read_line(&mut line).await.unwrap();
@@ -1389,14 +1448,20 @@ mod tests {
         assert!(line.starts_with("B04 OK STATUS completed"));
 
         // RENAME Work -> Projects
-        writer.write_all(b"B05 RENAME \"Work\" \"Projects\"\r\n").await.unwrap();
+        writer
+            .write_all(b"B05 RENAME \"Work\" \"Projects\"\r\n")
+            .await
+            .unwrap();
         writer.flush().await.unwrap();
         line.clear();
         reader.read_line(&mut line).await.unwrap();
         assert!(line.starts_with("B05 OK RENAME completed"));
 
         // DELETE Projects
-        writer.write_all(b"B06 DELETE \"Projects\"\r\n").await.unwrap();
+        writer
+            .write_all(b"B06 DELETE \"Projects\"\r\n")
+            .await
+            .unwrap();
         writer.flush().await.unwrap();
         line.clear();
         reader.read_line(&mut line).await.unwrap();

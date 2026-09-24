@@ -29,10 +29,8 @@ pub struct OutboundEngine {
 impl OutboundEngine {
     /// Create a new outbound engine.
     pub fn new(db: Arc<Database>, data_dir: String) -> Self {
-        let resolver = TokioAsyncResolver::tokio(
-            ResolverConfig::cloudflare(),
-            ResolverOpts::default(),
-        );
+        let resolver =
+            TokioAsyncResolver::tokio(ResolverConfig::cloudflare(), ResolverOpts::default());
         Self {
             db,
             data_dir,
@@ -90,15 +88,23 @@ impl OutboundEngine {
             Ok(()) => {
                 info!("Queue item {} delivered successfully", item.id);
                 if let Err(e) = self.db.delete_queue_item(&item.id) {
-                    error!("Failed to remove delivered item {} from queue: {e}", item.id);
+                    error!(
+                        "Failed to remove delivered item {} from queue: {e}",
+                        item.id
+                    );
                 }
             }
             Err(e) => {
                 warn!("Delivery failed for item {}: {e}", item.id);
                 let new_retry = item.retry_count + 1;
                 if new_retry >= 5 {
-                    warn!("Item {} exceeded max retries (5). Marking as failed.", item.id);
-                    let _ = self.db.update_queue_status(&item.id, "failed", None, new_retry);
+                    warn!(
+                        "Item {} exceeded max retries (5). Marking as failed.",
+                        item.id
+                    );
+                    let _ = self
+                        .db
+                        .update_queue_status(&item.id, "failed", None, new_retry);
                     if let Err(ndr_err) = self.generate_and_store_ndr(&item, &e.to_string()) {
                         error!("Failed to generate NDR for item {}: {ndr_err}", item.id);
                     }
@@ -124,7 +130,10 @@ impl OutboundEngine {
         let sender_account = match self.db.get_account_by_email(&item.sender)? {
             Some(acc) => acc,
             None => {
-                info!("Sender {} is not a local account, skipping local NDR storage", item.sender);
+                info!(
+                    "Sender {} is not a local account, skipping local NDR storage",
+                    item.sender
+                );
                 return Ok(());
             }
         };
@@ -133,13 +142,18 @@ impl OutboundEngine {
             Some(mb) => mb,
             None => {
                 let mb_id = self.db.insert_mailbox(&sender_account.id, "INBOX")?;
-                self.db.get_mailbox_by_id(&mb_id)?.context("Failed to retrieve created INBOX")?
+                self.db
+                    .get_mailbox_by_id(&mb_id)?
+                    .context("Failed to retrieve created INBOX")?
             }
         };
 
         let sender_domain = item.sender.split('@').nth(1).unwrap_or("fastrmail.local");
         let ndr_from = format!("MAILER-DAEMON@{sender_domain}");
-        let ndr_subject = format!("Undelivered Mail Returned to Sender: Delivery Failure to {}", item.recipient);
+        let ndr_subject = format!(
+            "Undelivered Mail Returned to Sender: Delivery Failure to {}",
+            item.recipient
+        );
         let now = Utc::now();
         let date_str = now.to_rfc2822();
         let ndr_blob_id = format!("ndr_{}", Uuid::new_v4());
@@ -202,16 +216,21 @@ impl OutboundEngine {
             .with_context(|| format!("Failed to read email blob from {blob_path}"))?;
 
         // 2. DKIM sign if an active key exists for the tenant
-        let signed_bytes = if let Ok(Some(dkim_key)) = self.db.get_active_dkim_key(&item.tenant_id) {
-            let sender_domain = item
-                .sender
-                .split('@')
-                .nth(1)
-                .unwrap_or("localhost");
-            match DkimSigner::sign(&raw_bytes, sender_domain, &dkim_key.selector, &dkim_key.private_key_pem) {
+        let signed_bytes = if let Ok(Some(dkim_key)) = self.db.get_active_dkim_key(&item.tenant_id)
+        {
+            let sender_domain = item.sender.split('@').nth(1).unwrap_or("localhost");
+            match DkimSigner::sign(
+                &raw_bytes,
+                sender_domain,
+                &dkim_key.selector,
+                &dkim_key.private_key_pem,
+            ) {
                 Ok(signed) => signed,
                 Err(e) => {
-                    warn!("DKIM signing failed for item {}: {e}; sending unsigned", item.id);
+                    warn!(
+                        "DKIM signing failed for item {}: {e}; sending unsigned",
+                        item.id
+                    );
                     raw_bytes
                 }
             }
@@ -229,9 +248,13 @@ impl OutboundEngine {
         let port = self.port_override.unwrap_or(25);
 
         // In test mode or when connecting to localhost
-        if recipient_domain == "localhost" || recipient_domain == "127.0.0.1" || self.port_override.is_some() {
+        if recipient_domain == "localhost"
+            || recipient_domain == "127.0.0.1"
+            || self.port_override.is_some()
+        {
             let target_addr = format!("127.0.0.1:{port}");
-            return send_smtp_mail(&target_addr, &item.sender, &item.recipient, &signed_bytes).await;
+            return send_smtp_mail(&target_addr, &item.sender, &item.recipient, &signed_bytes)
+                .await;
         }
 
         // Production: resolve MX records
@@ -344,7 +367,9 @@ pub async fn send_smtp_mail(
 }
 
 /// Helper to read an SMTP response line (handling multi-line responses).
-async fn read_smtp_response(reader: &mut BufReader<tokio::net::tcp::OwnedReadHalf>) -> Result<String> {
+async fn read_smtp_response(
+    reader: &mut BufReader<tokio::net::tcp::OwnedReadHalf>,
+) -> Result<String> {
     let mut last_line = String::new();
     loop {
         let mut line = String::new();
@@ -416,7 +441,8 @@ mod tests {
             .unwrap();
 
         // Update retry_count to 4 in database
-        db.update_queue_status(&queue_id, "retrying", None, 4).unwrap();
+        db.update_queue_status(&queue_id, "retrying", None, 4)
+            .unwrap();
 
         let queue_item = db
             .get_queue_pending()
@@ -438,10 +464,17 @@ mod tests {
 
         // 6. Verify NDR message was inserted into alice's INBOX
         let messages = db.get_messages_by_mailbox(&inbox_id).unwrap();
-        assert_eq!(messages.len(), 1, "Alice should have received 1 NDR message in INBOX");
+        assert_eq!(
+            messages.len(),
+            1,
+            "Alice should have received 1 NDR message in INBOX"
+        );
         let ndr = &messages[0];
         assert!(
-            ndr.parsed_subject.as_ref().unwrap().contains("Undelivered Mail Returned to Sender"),
+            ndr.parsed_subject
+                .as_ref()
+                .unwrap()
+                .contains("Undelivered Mail Returned to Sender"),
             "Subject must indicate delivery failure"
         );
         assert_eq!(ndr.parsed_to.as_deref(), Some("alice@senderdomain.org"));

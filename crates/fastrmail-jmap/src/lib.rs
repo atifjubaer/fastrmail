@@ -77,8 +77,8 @@ pub struct JmapSession {
 /// Authenticate request from headers or resolve default account.
 fn resolve_authenticated_account(state: &JmapState, headers: &HeaderMap) -> Option<Account> {
     if let Some(auth_val) = headers.get("authorization").and_then(|v| v.to_str().ok()) {
-        if auth_val.starts_with("Basic ") {
-            let encoded = &auth_val[6..].trim();
+        if let Some(encoded) = auth_val.strip_prefix("Basic ") {
+            let encoded = encoded.trim();
             if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(encoded) {
                 if let Ok(creds) = String::from_utf8(decoded) {
                     if let Some((email, pass)) = creds.split_once(':') {
@@ -88,8 +88,8 @@ fn resolve_authenticated_account(state: &JmapState, headers: &HeaderMap) -> Opti
                     }
                 }
             }
-        } else if auth_val.starts_with("Bearer ") {
-            let email = auth_val[7..].trim();
+        } else if let Some(email) = auth_val.strip_prefix("Bearer ") {
+            let email = email.trim();
             if let Ok(Some(acc)) = state.db.get_account_by_email(email) {
                 return Some(acc);
             }
@@ -113,7 +113,11 @@ fn resolve_authenticated_account(state: &JmapState, headers: &HeaderMap) -> Opti
                 .insert_account(&tenant_id, "postmaster", "postmaster@localhost", "admin123")
                 .unwrap_or_default();
             let _ = state.db.insert_mailbox(&acc_id, "INBOX");
-            state.db.get_account_by_email("postmaster@localhost").ok().flatten()
+            state
+                .db
+                .get_account_by_email("postmaster@localhost")
+                .ok()
+                .flatten()
         }
     }
 }
@@ -172,14 +176,8 @@ pub async fn get_session(
     );
 
     let mut primary_accounts = HashMap::new();
-    primary_accounts.insert(
-        "urn:ietf:params:jmap:core".to_string(),
-        account.id.clone(),
-    );
-    primary_accounts.insert(
-        "urn:ietf:params:jmap:mail".to_string(),
-        account.id.clone(),
-    );
+    primary_accounts.insert("urn:ietf:params:jmap:core".to_string(), account.id.clone());
+    primary_accounts.insert("urn:ietf:params:jmap:mail".to_string(), account.id.clone());
 
     let session = JmapSession {
         capabilities,
@@ -218,8 +216,7 @@ pub async fn handle_jmap_api(
                 let list: Vec<Value> = mailboxes
                     .into_iter()
                     .map(|mb: Mailbox| {
-                        let (total, unseen) =
-                            state.db.get_mailbox_counts(&mb.id).unwrap_or((0, 0));
+                        let (total, unseen) = state.db.get_mailbox_counts(&mb.id).unwrap_or((0, 0));
                         let role = match mb.name.to_uppercase().as_str() {
                             "INBOX" => Some("inbox"),
                             "SENT" => Some("sent"),
@@ -262,10 +259,7 @@ pub async fn handle_jmap_api(
             }
 
             "Email/query" => {
-                let limit = args
-                    .get("limit")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(50) as usize;
+                let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as usize;
 
                 let filter = args.get("filter");
                 let mut matched_ids = Vec::new();
@@ -273,7 +267,9 @@ pub async fn handle_jmap_api(
                 if let Some(f) = filter {
                     if let Some(text) = f.get("text").and_then(|v| v.as_str()) {
                         // Use Tantivy Full-Text Search
-                        if let Ok(search_hits) = state.search_engine.search(&account.id, text, limit) {
+                        if let Ok(search_hits) =
+                            state.search_engine.search(&account.id, text, limit)
+                        {
                             matched_ids = search_hits;
                         }
                     } else if let Some(in_mb) = f.get("inMailbox").and_then(|v| v.as_str()) {
@@ -371,7 +367,9 @@ pub async fn handle_jmap_api(
                     let all_messages = state.db.get_messages(&account.id).unwrap_or_default();
                     for (msg_id, patches) in update_map {
                         if let Some(msg) = all_messages.iter().find(|m| &m.id == msg_id) {
-                            if let Some(keywords) = patches.get("keywords").and_then(|k| k.as_object()) {
+                            if let Some(keywords) =
+                                patches.get("keywords").and_then(|k| k.as_object())
+                            {
                                 let mut new_flags = Vec::new();
                                 for (kw, val) in keywords {
                                     if val.as_bool().unwrap_or(false) {
@@ -383,8 +381,13 @@ pub async fn handle_jmap_api(
                                         }
                                     }
                                 }
-                                let flags_json = serde_json::to_string(&new_flags).unwrap_or_default();
-                                let _ = state.db.update_message_flags(&msg.mailbox_id, msg.uid, &flags_json);
+                                let flags_json =
+                                    serde_json::to_string(&new_flags).unwrap_or_default();
+                                let _ = state.db.update_message_flags(
+                                    &msg.mailbox_id,
+                                    msg.uid,
+                                    &flags_json,
+                                );
                                 updated.insert(msg_id.clone(), Value::Null);
                             }
                         }
@@ -397,7 +400,11 @@ pub async fn handle_jmap_api(
                     for val in destroy_arr {
                         if let Some(msg_id) = val.as_str() {
                             if let Some(msg) = all_messages.iter().find(|m| m.id == msg_id) {
-                                let _ = state.db.update_message_flags(&msg.mailbox_id, msg.uid, r#"["\\Deleted"]"#);
+                                let _ = state.db.update_message_flags(
+                                    &msg.mailbox_id,
+                                    msg.uid,
+                                    r#"["\\Deleted"]"#,
+                                );
                                 let _ = state.db.expunge_deleted_messages(&msg.mailbox_id);
                                 let _ = state.search_engine.delete_message(msg_id);
                                 destroyed.push(msg_id.to_string());
@@ -507,10 +514,7 @@ mod tests {
     async fn test_jmap_session_discovery() {
         let state = setup_test_jmap_state();
         let mut headers = HeaderMap::new();
-        headers.insert(
-            "authorization",
-            "Bearer user@jmap.local".parse().unwrap(),
-        );
+        headers.insert("authorization", "Bearer user@jmap.local".parse().unwrap());
 
         let res = get_session(State(state), headers).await.unwrap();
         assert_eq!(res.0.api_url, "/jmap/api");
@@ -523,17 +527,20 @@ mod tests {
     async fn test_jmap_core_echo() {
         let state = setup_test_jmap_state();
         let mut headers = HeaderMap::new();
-        headers.insert(
-            "authorization",
-            "Bearer user@jmap.local".parse().unwrap(),
-        );
+        headers.insert("authorization", "Bearer user@jmap.local".parse().unwrap());
 
         let req = JmapRequest {
             using: vec!["urn:ietf:params:jmap:core".to_string()],
-            method_calls: vec![("Core/echo".to_string(), json!({ "ping": "pong" }), "c0".to_string())],
+            method_calls: vec![(
+                "Core/echo".to_string(),
+                json!({ "ping": "pong" }),
+                "c0".to_string(),
+            )],
         };
 
-        let res = handle_jmap_api(State(state), headers, Json(req)).await.unwrap();
+        let res = handle_jmap_api(State(state), headers, Json(req))
+            .await
+            .unwrap();
         assert_eq!(res.0.method_responses.len(), 1);
         assert_eq!(res.0.method_responses[0].0, "Core/echo");
         assert_eq!(res.0.method_responses[0].1["ping"], "pong");
@@ -544,17 +551,16 @@ mod tests {
     async fn test_jmap_mailbox_get() {
         let state = setup_test_jmap_state();
         let mut headers = HeaderMap::new();
-        headers.insert(
-            "authorization",
-            "Bearer user@jmap.local".parse().unwrap(),
-        );
+        headers.insert("authorization", "Bearer user@jmap.local".parse().unwrap());
 
         let req = JmapRequest {
             using: vec!["urn:ietf:params:jmap:mail".to_string()],
             method_calls: vec![("Mailbox/get".to_string(), json!({}), "c1".to_string())],
         };
 
-        let res = handle_jmap_api(State(state), headers, Json(req)).await.unwrap();
+        let res = handle_jmap_api(State(state), headers, Json(req))
+            .await
+            .unwrap();
         assert_eq!(res.0.method_responses[0].0, "Mailbox/get");
         let list = res.0.method_responses[0].1["list"].as_array().unwrap();
         assert_eq!(list.len(), 1);
@@ -566,10 +572,7 @@ mod tests {
     async fn test_jmap_email_query_and_get() {
         let state = setup_test_jmap_state();
         let mut headers = HeaderMap::new();
-        headers.insert(
-            "authorization",
-            "Bearer user@jmap.local".parse().unwrap(),
-        );
+        headers.insert("authorization", "Bearer user@jmap.local".parse().unwrap());
 
         // 1. Query for "contract"
         let req_query = JmapRequest {
@@ -598,7 +601,9 @@ mod tests {
             )],
         };
 
-        let res_get = handle_jmap_api(State(state), headers, Json(req_get)).await.unwrap();
+        let res_get = handle_jmap_api(State(state), headers, Json(req_get))
+            .await
+            .unwrap();
         let emails = res_get.0.method_responses[0].1["list"].as_array().unwrap();
         assert_eq!(emails.len(), 1);
         assert_eq!(emails[0]["subject"], "Contract Agreement PDF");
@@ -608,12 +613,13 @@ mod tests {
     async fn test_jmap_email_set() {
         let state = setup_test_jmap_state();
         let mut headers = HeaderMap::new();
-        headers.insert(
-            "authorization",
-            "Bearer user@jmap.local".parse().unwrap(),
-        );
+        headers.insert("authorization", "Bearer user@jmap.local".parse().unwrap());
 
-        let account = state.db.get_account_by_email("user@jmap.local").unwrap().unwrap();
+        let account = state
+            .db
+            .get_account_by_email("user@jmap.local")
+            .unwrap()
+            .unwrap();
         let all_msgs = state.db.get_messages(&account.id).unwrap();
         let msg_id = &all_msgs[0].id;
 
@@ -633,9 +639,13 @@ mod tests {
             )],
         };
 
-        let res_set = handle_jmap_api(State(state.clone()), headers, Json(req_set)).await.unwrap();
+        let res_set = handle_jmap_api(State(state.clone()), headers, Json(req_set))
+            .await
+            .unwrap();
         assert_eq!(res_set.0.method_responses[0].0, "Email/set");
-        let updated = res_set.0.method_responses[0].1["updated"].as_object().unwrap();
+        let updated = res_set.0.method_responses[0].1["updated"]
+            .as_object()
+            .unwrap();
         assert!(updated.contains_key(msg_id));
 
         // Verify in DB that flags now contain \Seen

@@ -13,11 +13,11 @@ use tokio::net::{TcpListener, TcpStream};
 use tracing::{error, info, warn};
 use uuid::Uuid;
 
-use mail_parser::MessageParser;
 use fastrmail_auth::{DkimVerifier, DmarcEvaluator, DnsblVerifier, SpfVerifier};
 use fastrmail_core::Message;
 use fastrmail_search::SearchEngine;
 use fastrmail_store::Database;
+use mail_parser::MessageParser;
 
 /// SMTP server that accepts inbound email connections.
 pub struct SmtpServer {
@@ -129,7 +129,18 @@ impl SmtpServer {
                     let bypass = self.bypass_spam_check;
                     let is_sub = self.is_submission;
                     tokio::spawn(async move {
-                        if let Err(e) = handle_connection(stream, peer_addr, db, data_dir, search_engine, dnsbl, bypass, is_sub).await {
+                        if let Err(e) = handle_connection(
+                            stream,
+                            peer_addr,
+                            db,
+                            data_dir,
+                            search_engine,
+                            dnsbl,
+                            bypass,
+                            is_sub,
+                        )
+                        .await
+                        {
                             error!("SMTP session error from {peer_addr}: {e}");
                         }
                     });
@@ -168,7 +179,18 @@ impl SmtpServer {
                         let search_engine = search_engine.clone();
                         let dnsbl = dnsbl.clone();
                         tokio::spawn(async move {
-                            if let Err(e) = handle_connection(stream, peer_addr, db, data_dir, search_engine, dnsbl, bypass, is_sub).await {
+                            if let Err(e) = handle_connection(
+                                stream,
+                                peer_addr,
+                                db,
+                                data_dir,
+                                search_engine,
+                                dnsbl,
+                                bypass,
+                                is_sub,
+                            )
+                            .await
+                            {
                                 error!("SMTP session error from {peer_addr}: {e}");
                             }
                         });
@@ -222,6 +244,7 @@ pub fn parse_header(data: &str, header_name: &str) -> Option<String> {
 }
 
 /// Handle a single SMTP connection through the full state machine.
+#[allow(clippy::too_many_arguments)]
 async fn handle_connection(
     stream: TcpStream,
     peer_addr: SocketAddr,
@@ -237,9 +260,7 @@ async fn handle_connection(
     let mut session = SmtpSession::new();
 
     // Send greeting banner
-    writer
-        .write_all(b"220 FastrMail ESMTP Ready\r\n")
-        .await?;
+    writer.write_all(b"220 FastrMail ESMTP Ready\r\n").await?;
 
     let mut line_buf = String::new();
     loop {
@@ -256,9 +277,7 @@ async fn handle_connection(
         if upper.starts_with("EHLO") || upper.starts_with("HELO") {
             session.greeted = true;
             session.reset();
-            let domain_part = if upper.starts_with("EHLO ") {
-                line[5..].trim().to_string()
-            } else if upper.starts_with("HELO ") {
+            let domain_part = if upper.starts_with("EHLO ") || upper.starts_with("HELO ") {
                 line[5..].trim().to_string()
             } else {
                 "localhost".to_string()
@@ -268,7 +287,11 @@ async fn handle_connection(
                 .write_all(b"250-FastrMail\r\n250-SIZE 52428800\r\n250-8BITMIME\r\n250-AUTH PLAIN LOGIN\r\n250 OK\r\n")
                 .await?;
         } else if upper.starts_with("AUTH ") || upper == "AUTH" {
-            let mechanism_part = if upper == "AUTH" { "" } else { line[4..].trim() };
+            let mechanism_part = if upper == "AUTH" {
+                ""
+            } else {
+                line[4..].trim()
+            };
             let upper_mech = mechanism_part.to_uppercase();
 
             if upper_mech.starts_with("PLAIN") {
@@ -294,11 +317,20 @@ async fn handle_connection(
                 if let Ok(bytes) = decoded {
                     let parts: Vec<&[u8]> = bytes.split(|&b| b == 0).collect();
                     let (user, pass) = if parts.len() >= 3 {
-                        (String::from_utf8_lossy(parts[1]), String::from_utf8_lossy(parts[2]))
+                        (
+                            String::from_utf8_lossy(parts[1]),
+                            String::from_utf8_lossy(parts[2]),
+                        )
                     } else if parts.len() == 2 {
-                        (String::from_utf8_lossy(parts[0]), String::from_utf8_lossy(parts[1]))
+                        (
+                            String::from_utf8_lossy(parts[0]),
+                            String::from_utf8_lossy(parts[1]),
+                        )
                     } else {
-                        (std::borrow::Cow::Borrowed(""), std::borrow::Cow::Borrowed(""))
+                        (
+                            std::borrow::Cow::Borrowed(""),
+                            std::borrow::Cow::Borrowed(""),
+                        )
                     };
 
                     if !user.is_empty() {
@@ -310,9 +342,13 @@ async fn handle_connection(
                 }
 
                 if authenticated {
-                    writer.write_all(b"235 2.7.0 Authentication successful\r\n").await?;
+                    writer
+                        .write_all(b"235 2.7.0 Authentication successful\r\n")
+                        .await?;
                 } else {
-                    writer.write_all(b"535 5.7.8 Authentication credentials invalid\r\n").await?;
+                    writer
+                        .write_all(b"535 5.7.8 Authentication credentials invalid\r\n")
+                        .await?;
                 }
             } else if upper_mech.starts_with("LOGIN") {
                 let auth_arg = mechanism_part["LOGIN".len()..].trim();
@@ -351,18 +387,22 @@ async fn handle_connection(
                 }
 
                 if authenticated {
-                    writer.write_all(b"235 2.7.0 Authentication successful\r\n").await?;
+                    writer
+                        .write_all(b"235 2.7.0 Authentication successful\r\n")
+                        .await?;
                 } else {
-                    writer.write_all(b"535 5.7.8 Authentication credentials invalid\r\n").await?;
+                    writer
+                        .write_all(b"535 5.7.8 Authentication credentials invalid\r\n")
+                        .await?;
                 }
             } else {
-                writer.write_all(b"504 5.5.4 Unrecognized authentication mechanism\r\n").await?;
+                writer
+                    .write_all(b"504 5.5.4 Unrecognized authentication mechanism\r\n")
+                    .await?;
             }
         } else if upper.starts_with("MAIL FROM:") {
             if !session.greeted {
-                writer
-                    .write_all(b"503 Send EHLO/HELO first\r\n")
-                    .await?;
+                writer.write_all(b"503 Send EHLO/HELO first\r\n").await?;
                 continue;
             }
             if is_submission && session.authenticated_user.is_none() {
@@ -377,9 +417,7 @@ async fn handle_connection(
             writer.write_all(b"250 OK\r\n").await?;
         } else if upper.starts_with("RCPT TO:") {
             if session.sender.is_none() {
-                writer
-                    .write_all(b"503 Send MAIL FROM first\r\n")
-                    .await?;
+                writer.write_all(b"503 Send MAIL FROM first\r\n").await?;
                 continue;
             }
             let addr_part = &line[8..]; // After "RCPT TO:"
@@ -407,7 +445,9 @@ async fn handle_connection(
 
                 // 2. Greylisting check
                 let client_ip = peer_addr.ip().to_string();
-                let passed = db.check_greylist(&client_ip, sender, &recipient).unwrap_or(true);
+                let passed = db
+                    .check_greylist(&client_ip, sender, &recipient)
+                    .unwrap_or(true);
                 if !passed {
                     writer
                         .write_all(b"451 4.7.1 Greylisting in action, please try again later\r\n")
@@ -426,9 +466,7 @@ async fn handle_connection(
                 continue;
             }
             if session.recipients.is_empty() {
-                writer
-                    .write_all(b"503 Send RCPT TO first\r\n")
-                    .await?;
+                writer.write_all(b"503 Send RCPT TO first\r\n").await?;
                 continue;
             }
             writer
@@ -470,7 +508,8 @@ async fn handle_connection(
             let from_addr = parse_address(&from_header);
             let from_domain = from_addr.split('@').nth(1).unwrap_or("localhost");
 
-            let dmarc_result = DmarcEvaluator::evaluate(&dkim_result, &spf_result, from_domain).await?;
+            let dmarc_result =
+                DmarcEvaluator::evaluate(&dkim_result, &spf_result, from_domain).await?;
 
             info!(
                 "Inbound auth results: ip={} sender={} from_domain={} spf_pass={} dkim_pass={} dmarc_pass={} dmarc_policy={}",
@@ -506,10 +545,8 @@ async fn handle_connection(
             final_message.push_str(&data);
 
             let subject = parse_header(&data, "Subject");
-            let from = parse_header(&data, "From")
-                .or_else(|| session.sender.clone());
-            let to = parse_header(&data, "To")
-                .or_else(|| session.recipients.first().cloned());
+            let from = parse_header(&data, "From").or_else(|| session.sender.clone());
+            let to = parse_header(&data, "To").or_else(|| session.recipients.first().cloned());
             let size_bytes = final_message.len() as i64;
 
             // Get or create tenant and account
@@ -527,10 +564,7 @@ async fn handle_connection(
             let account_id = match db.get_account_by_email(&recipient_email)? {
                 Some(a) => a.id,
                 None => {
-                    let username = recipient_email
-                        .split('@')
-                        .next()
-                        .unwrap_or("postmaster");
+                    let username = recipient_email.split('@').next().unwrap_or("postmaster");
                     db.insert_account(
                         &default_tenant_id,
                         username,
@@ -558,14 +592,18 @@ async fn handle_connection(
 
             for rule in sieve_rules {
                 if rule.matches(subj_str, from_str, to_str, &plain_body) {
-                    info!("Sieve rule '{}' matched for account {account_id}", rule.name);
+                    info!(
+                        "Sieve rule '{}' matched for account {account_id}",
+                        rule.name
+                    );
                     match rule.action {
                         fastrmail_core::SieveAction::Discard => {
                             discard_message = true;
                             break;
                         }
                         fastrmail_core::SieveAction::Reject { reason } => {
-                            reject_reason = reason.or_else(|| Some("Message rejected by Sieve rule".to_string()));
+                            reject_reason = reason
+                                .or_else(|| Some("Message rejected by Sieve rule".to_string()));
                             break;
                         }
                         fastrmail_core::SieveAction::FileInto { mailbox } => {
@@ -608,7 +646,10 @@ async fn handle_connection(
 
             // Ensure target mailbox exists
             let mailboxes = db.get_mailboxes(&account_id)?;
-            let target_mailbox_id = if let Some(mb) = mailboxes.iter().find(|m| m.name.eq_ignore_ascii_case(&target_mailbox_name)) {
+            let target_mailbox_id = if let Some(mb) = mailboxes
+                .iter()
+                .find(|m| m.name.eq_ignore_ascii_case(&target_mailbox_name))
+            {
                 mb.id.clone()
             } else {
                 db.insert_mailbox(&account_id, &target_mailbox_name)?
@@ -686,9 +727,7 @@ async fn handle_connection(
             break;
         } else {
             warn!("Unknown SMTP command: {line}");
-            writer
-                .write_all(b"500 Command not recognized\r\n")
-                .await?;
+            writer.write_all(b"500 Command not recognized\r\n").await?;
         }
     }
 
@@ -736,8 +775,8 @@ mod tests {
         std::fs::create_dir_all(&temp_dir).unwrap();
         let data_dir = temp_dir.to_string_lossy().to_string();
 
-        let server = SmtpServer::new(Arc::clone(&db), data_dir.clone())
-            .with_bypass_spam_check(true);
+        let server =
+            SmtpServer::new(Arc::clone(&db), data_dir.clone()).with_bypass_spam_check(true);
         let addr = server
             .start_with_addr("127.0.0.1:0")
             .await
@@ -814,8 +853,8 @@ mod tests {
         std::fs::create_dir_all(&temp_dir).unwrap();
         let data_dir = temp_dir.to_string_lossy().to_string();
 
-        let server = SmtpServer::new(Arc::clone(&db), data_dir.clone())
-            .with_bypass_spam_check(true);
+        let server =
+            SmtpServer::new(Arc::clone(&db), data_dir.clone()).with_bypass_spam_check(true);
         let addr = server
             .start_with_addr("127.0.0.1:0")
             .await
@@ -831,18 +870,33 @@ mod tests {
                          \r\n\
                          Body with DKIM signature.";
 
-        let signed = DkimSigner::sign(raw_body, "fastrmail.local", "default", &keys.private_key_pem).unwrap();
+        let signed = DkimSigner::sign(
+            raw_body,
+            "fastrmail.local",
+            "default",
+            &keys.private_key_pem,
+        )
+        .unwrap();
 
         let stream = TcpStream::connect(addr).await.unwrap();
         let (read_half, mut write_half) = stream.into_split();
         let mut reader = BufReader::new(read_half);
 
         let _ = read_response(&mut reader).await;
-        write_half.write_all(b"EHLO client.local\r\n").await.unwrap();
+        write_half
+            .write_all(b"EHLO client.local\r\n")
+            .await
+            .unwrap();
         let _ = read_multiline_response(&mut reader).await;
-        write_half.write_all(b"MAIL FROM:<sender@fastrmail.local>\r\n").await.unwrap();
+        write_half
+            .write_all(b"MAIL FROM:<sender@fastrmail.local>\r\n")
+            .await
+            .unwrap();
         let _ = read_response(&mut reader).await;
-        write_half.write_all(b"RCPT TO:<recipient@localhost>\r\n").await.unwrap();
+        write_half
+            .write_all(b"RCPT TO:<recipient@localhost>\r\n")
+            .await
+            .unwrap();
         let _ = read_response(&mut reader).await;
         write_half.write_all(b"DATA\r\n").await.unwrap();
         let _ = read_response(&mut reader).await;
@@ -850,7 +904,10 @@ mod tests {
         write_half.write_all(&signed).await.unwrap();
         write_half.write_all(b"\r\n.\r\n").await.unwrap();
         let data_ok = read_response(&mut reader).await;
-        assert!(data_ok.starts_with("250"), "Expected 250 for neutral domain, got: {data_ok}");
+        assert!(
+            data_ok.starts_with("250"),
+            "Expected 250 for neutral domain, got: {data_ok}"
+        );
 
         write_half.write_all(b"QUIT\r\n").await.unwrap();
 
@@ -867,8 +924,8 @@ mod tests {
         std::fs::create_dir_all(&temp_dir).unwrap();
         let data_dir = temp_dir.to_string_lossy().to_string();
 
-        let server = SmtpServer::new(Arc::clone(&db), data_dir.clone())
-            .with_bypass_spam_check(true);
+        let server =
+            SmtpServer::new(Arc::clone(&db), data_dir.clone()).with_bypass_spam_check(true);
         let addr = server
             .start_with_addr("127.0.0.1:0")
             .await
@@ -883,11 +940,20 @@ mod tests {
         let mut reader = BufReader::new(read_half);
 
         let _ = read_response(&mut reader).await;
-        write_half.write_all(b"EHLO client.local\r\n").await.unwrap();
+        write_half
+            .write_all(b"EHLO client.local\r\n")
+            .await
+            .unwrap();
         let _ = read_multiline_response(&mut reader).await;
-        write_half.write_all(b"MAIL FROM:<attacker@example.com>\r\n").await.unwrap();
+        write_half
+            .write_all(b"MAIL FROM:<attacker@example.com>\r\n")
+            .await
+            .unwrap();
         let _ = read_response(&mut reader).await;
-        write_half.write_all(b"RCPT TO:<victim@localhost>\r\n").await.unwrap();
+        write_half
+            .write_all(b"RCPT TO:<victim@localhost>\r\n")
+            .await
+            .unwrap();
         let _ = read_response(&mut reader).await;
         write_half.write_all(b"DATA\r\n").await.unwrap();
         let _ = read_response(&mut reader).await;
@@ -913,8 +979,13 @@ mod tests {
 
         // Verify message was NOT stored
         let blob_dir = format!("{data_dir}/blobs");
-        let entries_count = std::fs::read_dir(&blob_dir).map(|rd| rd.count()).unwrap_or(0);
-        assert_eq!(entries_count, 0, "Rejected message must not be stored on disk");
+        let entries_count = std::fs::read_dir(&blob_dir)
+            .map(|rd| rd.count())
+            .unwrap_or(0);
+        assert_eq!(
+            entries_count, 0,
+            "Rejected message must not be stored on disk"
+        );
 
         write_half.write_all(b"QUIT\r\n").await.unwrap();
 
@@ -932,8 +1003,8 @@ mod tests {
         let data_dir = temp_dir.to_string_lossy().to_string();
 
         // 1. Start a mock receiving SMTP server on port 0
-        let mock_server = SmtpServer::new(Arc::clone(&db), data_dir.clone())
-            .with_bypass_spam_check(true);
+        let mock_server =
+            SmtpServer::new(Arc::clone(&db), data_dir.clone()).with_bypass_spam_check(true);
         let mock_addr = mock_server.start_with_addr("127.0.0.1:0").await.unwrap();
         let mock_port = mock_addr.port();
 
@@ -955,7 +1026,12 @@ mod tests {
         // 3. Queue the email in Database
         let tenant_id = db.insert_tenant("fastrmail.com").unwrap();
         let _queue_id = db
-            .queue_email(&tenant_id, &blob_id, "outbound@fastrmail.com", "mock@localhost")
+            .queue_email(
+                &tenant_id,
+                &blob_id,
+                "outbound@fastrmail.com",
+                "mock@localhost",
+            )
             .unwrap();
 
         let pending = db.get_queue_pending().unwrap();
@@ -983,7 +1059,8 @@ mod tests {
 
         let search_engine = Arc::new(SearchEngine::new_in_ram().unwrap());
 
-        let temp_dir = std::env::temp_dir().join(format!("fastrmail_smtp_search_{}", Uuid::new_v4()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("fastrmail_smtp_search_{}", Uuid::new_v4()));
         std::fs::create_dir_all(&temp_dir).unwrap();
         let data_dir = temp_dir.to_string_lossy().to_string();
 
@@ -1009,12 +1086,18 @@ mod tests {
             }
         }
 
-        write_half.write_all(b"MAIL FROM:<scientist@lab.local>\r\n").await.unwrap();
+        write_half
+            .write_all(b"MAIL FROM:<scientist@lab.local>\r\n")
+            .await
+            .unwrap();
         line.clear();
         reader.read_line(&mut line).await.unwrap();
         assert!(line.starts_with("250"));
 
-        write_half.write_all(b"RCPT TO:<alice@localhost>\r\n").await.unwrap();
+        write_half
+            .write_all(b"RCPT TO:<alice@localhost>\r\n")
+            .await
+            .unwrap();
         line.clear();
         reader.read_line(&mut line).await.unwrap();
         assert!(line.starts_with("250"));
@@ -1039,8 +1122,14 @@ mod tests {
 
         // Verify that Tantivy indexed the email and can find "quantum-teleportation"
         let account = db.get_account_by_email("alice@localhost").unwrap().unwrap();
-        let results = search_engine.search(&account.id, "quantum-teleportation", 10).unwrap();
-        assert_eq!(results.len(), 1, "Should find indexed message by unique keyword");
+        let results = search_engine
+            .search(&account.id, "quantum-teleportation", 10)
+            .unwrap();
+        assert_eq!(
+            results.len(),
+            1,
+            "Should find indexed message by unique keyword"
+        );
 
         std::fs::remove_dir_all(&temp_dir).ok();
     }
@@ -1067,19 +1156,38 @@ mod tests {
         let mut reader = BufReader::new(read_half);
 
         let _ = read_response(&mut reader).await;
-        write_half.write_all(b"EHLO client.local\r\n").await.unwrap();
+        write_half
+            .write_all(b"EHLO client.local\r\n")
+            .await
+            .unwrap();
         let _ = read_multiline_response(&mut reader).await;
-        write_half.write_all(b"MAIL FROM:<new_sender@remote.org>\r\n").await.unwrap();
+        write_half
+            .write_all(b"MAIL FROM:<new_sender@remote.org>\r\n")
+            .await
+            .unwrap();
         let _ = read_response(&mut reader).await;
-        write_half.write_all(b"RCPT TO:<alice@localhost>\r\n").await.unwrap();
+        write_half
+            .write_all(b"RCPT TO:<alice@localhost>\r\n")
+            .await
+            .unwrap();
 
         let rcpt_resp = read_response(&mut reader).await;
-        assert!(rcpt_resp.starts_with("451"), "Expected 451 greylisting, got: {rcpt_resp}");
+        assert!(
+            rcpt_resp.starts_with("451"),
+            "Expected 451 greylisting, got: {rcpt_resp}"
+        );
         assert!(rcpt_resp.contains("Greylisting in action"));
 
         // Seed DB as if 6 minutes have passed
         let six_mins_ago = chrono::Utc::now() - chrono::Duration::minutes(6);
-        db.insert_greylist_record("127.0.0.1", "new_sender@remote.org", "alice@localhost", six_mins_ago, false).unwrap();
+        db.insert_greylist_record(
+            "127.0.0.1",
+            "new_sender@remote.org",
+            "alice@localhost",
+            six_mins_ago,
+            false,
+        )
+        .unwrap();
 
         // Attempt 2: Retry after window elapsed -> passes with 250 OK
         let stream2 = TcpStream::connect(addr).await.unwrap();
@@ -1087,14 +1195,26 @@ mod tests {
         let mut reader2 = BufReader::new(read_half2);
 
         let _ = read_response(&mut reader2).await;
-        write_half2.write_all(b"EHLO client.local\r\n").await.unwrap();
+        write_half2
+            .write_all(b"EHLO client.local\r\n")
+            .await
+            .unwrap();
         let _ = read_multiline_response(&mut reader2).await;
-        write_half2.write_all(b"MAIL FROM:<new_sender@remote.org>\r\n").await.unwrap();
+        write_half2
+            .write_all(b"MAIL FROM:<new_sender@remote.org>\r\n")
+            .await
+            .unwrap();
         let _ = read_response(&mut reader2).await;
-        write_half2.write_all(b"RCPT TO:<alice@localhost>\r\n").await.unwrap();
+        write_half2
+            .write_all(b"RCPT TO:<alice@localhost>\r\n")
+            .await
+            .unwrap();
 
         let rcpt_resp2 = read_response(&mut reader2).await;
-        assert!(rcpt_resp2.starts_with("250"), "Expected 250 OK after greylist delay, got: {rcpt_resp2}");
+        assert!(
+            rcpt_resp2.starts_with("250"),
+            "Expected 250 OK after greylist delay, got: {rcpt_resp2}"
+        );
 
         write_half2.write_all(b"QUIT\r\n").await.unwrap();
         std::fs::remove_dir_all(&temp_dir).ok();
@@ -1122,14 +1242,26 @@ mod tests {
         let mut reader = BufReader::new(read_half);
 
         let _ = read_response(&mut reader).await;
-        write_half.write_all(b"EHLO spammer.local\r\n").await.unwrap();
+        write_half
+            .write_all(b"EHLO spammer.local\r\n")
+            .await
+            .unwrap();
         let _ = read_multiline_response(&mut reader).await;
-        write_half.write_all(b"MAIL FROM:<bad@spammer.org>\r\n").await.unwrap();
+        write_half
+            .write_all(b"MAIL FROM:<bad@spammer.org>\r\n")
+            .await
+            .unwrap();
         let _ = read_response(&mut reader).await;
-        write_half.write_all(b"RCPT TO:<alice@localhost>\r\n").await.unwrap();
+        write_half
+            .write_all(b"RCPT TO:<alice@localhost>\r\n")
+            .await
+            .unwrap();
 
         let rcpt_resp = read_response(&mut reader).await;
-        assert!(rcpt_resp.starts_with("554"), "Expected 554 DNSBL block, got: {rcpt_resp}");
+        assert!(
+            rcpt_resp.starts_with("554"),
+            "Expected 554 DNSBL block, got: {rcpt_resp}"
+        );
         assert!(rcpt_resp.contains("blocked using DNSBL"));
 
         std::fs::remove_dir_all(&temp_dir).ok();
@@ -1140,7 +1272,13 @@ mod tests {
         let db = Database::new_memory().expect("Failed to create in-memory DB");
         db.init_schema().expect("Failed to init schema");
         let tenant_id = db.insert_tenant("submission.test").unwrap();
-        db.insert_account(&tenant_id, "alice", "alice@submission.test", "CorrectPassword123!").unwrap();
+        db.insert_account(
+            &tenant_id,
+            "alice",
+            "alice@submission.test",
+            "CorrectPassword123!",
+        )
+        .unwrap();
         let db = Arc::new(db);
 
         let temp_dir = std::env::temp_dir().join(format!("fastrmail_sub_{}", Uuid::new_v4()));
@@ -1161,46 +1299,86 @@ mod tests {
 
         write_half.write_all(b"EHLO client.test\r\n").await.unwrap();
         let ehlo_resp = read_multiline_response(&mut reader).await;
-        assert!(ehlo_resp.iter().any(|l| l.contains("AUTH PLAIN LOGIN")), "EHLO should advertise AUTH PLAIN LOGIN, got: {:?}", ehlo_resp);
+        assert!(
+            ehlo_resp.iter().any(|l| l.contains("AUTH PLAIN LOGIN")),
+            "EHLO should advertise AUTH PLAIN LOGIN, got: {:?}",
+            ehlo_resp
+        );
 
         // 1. Attempt MAIL FROM without authentication on submission port -> 530
-        write_half.write_all(b"MAIL FROM:<alice@submission.test>\r\n").await.unwrap();
+        write_half
+            .write_all(b"MAIL FROM:<alice@submission.test>\r\n")
+            .await
+            .unwrap();
         let unauth_resp = read_response(&mut reader).await;
-        assert!(unauth_resp.starts_with("530"), "Expected 530 Auth required, got: {unauth_resp}");
+        assert!(
+            unauth_resp.starts_with("530"),
+            "Expected 530 Auth required, got: {unauth_resp}"
+        );
 
         // 2. Attempt AUTH PLAIN with wrong password -> 535
         use base64::Engine;
         let bad_plain = "\0alice@submission.test\0WrongPassword";
         let bad_b64 = base64::engine::general_purpose::STANDARD.encode(bad_plain);
-        write_half.write_all(format!("AUTH PLAIN {bad_b64}\r\n").as_bytes()).await.unwrap();
+        write_half
+            .write_all(format!("AUTH PLAIN {bad_b64}\r\n").as_bytes())
+            .await
+            .unwrap();
         let bad_auth_resp = read_response(&mut reader).await;
-        assert!(bad_auth_resp.starts_with("535"), "Expected 535 Bad credentials, got: {bad_auth_resp}");
+        assert!(
+            bad_auth_resp.starts_with("535"),
+            "Expected 535 Bad credentials, got: {bad_auth_resp}"
+        );
 
         // 3. Attempt AUTH PLAIN with correct credentials -> 235
         let good_plain = "\0alice@submission.test\0CorrectPassword123!";
         let good_b64 = base64::engine::general_purpose::STANDARD.encode(good_plain);
-        write_half.write_all(format!("AUTH PLAIN {good_b64}\r\n").as_bytes()).await.unwrap();
+        write_half
+            .write_all(format!("AUTH PLAIN {good_b64}\r\n").as_bytes())
+            .await
+            .unwrap();
         let good_auth_resp = read_response(&mut reader).await;
-        assert!(good_auth_resp.starts_with("235"), "Expected 235 Auth success, got: {good_auth_resp}");
+        assert!(
+            good_auth_resp.starts_with("235"),
+            "Expected 235 Auth success, got: {good_auth_resp}"
+        );
 
         // 4. Now MAIL FROM should succeed
-        write_half.write_all(b"MAIL FROM:<alice@submission.test>\r\n").await.unwrap();
+        write_half
+            .write_all(b"MAIL FROM:<alice@submission.test>\r\n")
+            .await
+            .unwrap();
         let mail_resp = read_response(&mut reader).await;
-        assert!(mail_resp.starts_with("250"), "Expected 250 OK for MAIL FROM, got: {mail_resp}");
+        assert!(
+            mail_resp.starts_with("250"),
+            "Expected 250 OK for MAIL FROM, got: {mail_resp}"
+        );
 
         // 5. RCPT TO
-        write_half.write_all(b"RCPT TO:<bob@submission.test>\r\n").await.unwrap();
+        write_half
+            .write_all(b"RCPT TO:<bob@submission.test>\r\n")
+            .await
+            .unwrap();
         let rcpt_resp = read_response(&mut reader).await;
-        assert!(rcpt_resp.starts_with("250"), "Expected 250 OK for RCPT TO, got: {rcpt_resp}");
+        assert!(
+            rcpt_resp.starts_with("250"),
+            "Expected 250 OK for RCPT TO, got: {rcpt_resp}"
+        );
 
         // 6. DATA
         write_half.write_all(b"DATA\r\n").await.unwrap();
         let data_prompt = read_response(&mut reader).await;
-        assert!(data_prompt.starts_with("354"), "Expected 354, got: {data_prompt}");
+        assert!(
+            data_prompt.starts_with("354"),
+            "Expected 354, got: {data_prompt}"
+        );
 
         write_half.write_all(b"From: alice@submission.test\r\nTo: bob@submission.test\r\nSubject: Submission Test\r\n\r\nHello via port 587!\r\n.\r\n").await.unwrap();
         let data_ok = read_response(&mut reader).await;
-        assert!(data_ok.starts_with("250"), "Expected 250 OK for DATA, got: {data_ok}");
+        assert!(
+            data_ok.starts_with("250"),
+            "Expected 250 OK for DATA, got: {data_ok}"
+        );
 
         write_half.write_all(b"QUIT\r\n").await.unwrap();
         std::fs::remove_dir_all(&temp_dir).ok();
@@ -1211,7 +1389,9 @@ mod tests {
         let db = Database::new_memory().expect("Failed to create in-memory DB");
         db.init_schema().expect("Failed to init schema");
         let tenant_id = db.insert_tenant("sieve-smtp.test").unwrap();
-        let user_id = db.insert_account(&tenant_id, "sieveuser", "sieveuser@sieve-smtp.test", "pass").unwrap();
+        let user_id = db
+            .insert_account(&tenant_id, "sieveuser", "sieveuser@sieve-smtp.test", "pass")
+            .unwrap();
 
         // Rule 1: Discard if subject contains "lottery"
         let discard_rule = fastrmail_core::SieveRule {
@@ -1223,7 +1403,13 @@ mod tests {
             action: fastrmail_core::SieveAction::Discard,
             is_active: true,
         };
-        db.insert_sieve_script(&user_id, "Discard Lottery", &serde_json::to_string(&discard_rule).unwrap(), true).unwrap();
+        db.insert_sieve_script(
+            &user_id,
+            "Discard Lottery",
+            &serde_json::to_string(&discard_rule).unwrap(),
+            true,
+        )
+        .unwrap();
 
         // Rule 2: Reject if subject contains "malware"
         let reject_rule = fastrmail_core::SieveRule {
@@ -1232,10 +1418,18 @@ mod tests {
             field: fastrmail_core::SieveField::Subject,
             operator: fastrmail_core::SieveOperator::Contains,
             value: "malware".to_string(),
-            action: fastrmail_core::SieveAction::Reject { reason: Some("Rejected dangerous malware".to_string()) },
+            action: fastrmail_core::SieveAction::Reject {
+                reason: Some("Rejected dangerous malware".to_string()),
+            },
             is_active: true,
         };
-        db.insert_sieve_script(&user_id, "Reject Malware", &serde_json::to_string(&reject_rule).unwrap(), true).unwrap();
+        db.insert_sieve_script(
+            &user_id,
+            "Reject Malware",
+            &serde_json::to_string(&reject_rule).unwrap(),
+            true,
+        )
+        .unwrap();
 
         // Rule 3: File into "Archive" if subject contains "receipt"
         let file_rule = fastrmail_core::SieveRule {
@@ -1244,18 +1438,26 @@ mod tests {
             field: fastrmail_core::SieveField::Subject,
             operator: fastrmail_core::SieveOperator::Contains,
             value: "receipt".to_string(),
-            action: fastrmail_core::SieveAction::FileInto { mailbox: "Archive".to_string() },
+            action: fastrmail_core::SieveAction::FileInto {
+                mailbox: "Archive".to_string(),
+            },
             is_active: true,
         };
-        db.insert_sieve_script(&user_id, "File Receipt", &serde_json::to_string(&file_rule).unwrap(), true).unwrap();
+        db.insert_sieve_script(
+            &user_id,
+            "File Receipt",
+            &serde_json::to_string(&file_rule).unwrap(),
+            true,
+        )
+        .unwrap();
 
         let db = Arc::new(db);
         let temp_dir = std::env::temp_dir().join(format!("fastrmail_sieve_{}", Uuid::new_v4()));
         std::fs::create_dir_all(&temp_dir).unwrap();
         let data_dir = temp_dir.to_string_lossy().to_string();
 
-        let server = SmtpServer::new(Arc::clone(&db), data_dir.clone())
-            .with_bypass_spam_check(true);
+        let server =
+            SmtpServer::new(Arc::clone(&db), data_dir.clone()).with_bypass_spam_check(true);
         let addr = server.start_with_addr("127.0.0.1:0").await.unwrap();
 
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -1269,15 +1471,24 @@ mod tests {
 
             write_half.write_all(b"EHLO localhost\r\n").await.unwrap();
             let _ = read_multiline_response(&mut reader).await;
-            write_half.write_all(b"MAIL FROM:<sender@localhost>\r\n").await.unwrap();
+            write_half
+                .write_all(b"MAIL FROM:<sender@localhost>\r\n")
+                .await
+                .unwrap();
             let _ = read_response(&mut reader).await;
-            write_half.write_all(b"RCPT TO:<sieveuser@sieve-smtp.test>\r\n").await.unwrap();
+            write_half
+                .write_all(b"RCPT TO:<sieveuser@sieve-smtp.test>\r\n")
+                .await
+                .unwrap();
             let _ = read_response(&mut reader).await;
             write_half.write_all(b"DATA\r\n").await.unwrap();
             let _ = read_response(&mut reader).await;
             write_half.write_all(b"Subject: You won the lottery!\r\nFrom: sender@localhost\r\nTo: sieveuser@sieve-smtp.test\r\n\r\nMoney awaits.\r\n.\r\n").await.unwrap();
             let data_resp = read_response(&mut reader).await;
-            assert!(data_resp.starts_with("250"), "Expected 250 discard acknowledgment, got: {data_resp}");
+            assert!(
+                data_resp.starts_with("250"),
+                "Expected 250 discard acknowledgment, got: {data_resp}"
+            );
 
             // Verify message was discarded (not in INBOX)
             let msgs = db.get_messages(&user_id).unwrap();
@@ -1293,15 +1504,24 @@ mod tests {
 
             write_half.write_all(b"EHLO localhost\r\n").await.unwrap();
             let _ = read_multiline_response(&mut reader).await;
-            write_half.write_all(b"MAIL FROM:<bad@localhost>\r\n").await.unwrap();
+            write_half
+                .write_all(b"MAIL FROM:<bad@localhost>\r\n")
+                .await
+                .unwrap();
             let _ = read_response(&mut reader).await;
-            write_half.write_all(b"RCPT TO:<sieveuser@sieve-smtp.test>\r\n").await.unwrap();
+            write_half
+                .write_all(b"RCPT TO:<sieveuser@sieve-smtp.test>\r\n")
+                .await
+                .unwrap();
             let _ = read_response(&mut reader).await;
             write_half.write_all(b"DATA\r\n").await.unwrap();
             let _ = read_response(&mut reader).await;
             write_half.write_all(b"Subject: Download this malware\r\nFrom: bad@localhost\r\nTo: sieveuser@sieve-smtp.test\r\n\r\nPayload.\r\n.\r\n").await.unwrap();
             let data_resp = read_response(&mut reader).await;
-            assert!(data_resp.starts_with("550"), "Expected 550 Sieve reject, got: {data_resp}");
+            assert!(
+                data_resp.starts_with("550"),
+                "Expected 550 Sieve reject, got: {data_resp}"
+            );
             assert!(data_resp.contains("Rejected dangerous malware"));
         }
 
@@ -1314,21 +1534,36 @@ mod tests {
 
             write_half.write_all(b"EHLO localhost\r\n").await.unwrap();
             let _ = read_multiline_response(&mut reader).await;
-            write_half.write_all(b"MAIL FROM:<store@localhost>\r\n").await.unwrap();
+            write_half
+                .write_all(b"MAIL FROM:<store@localhost>\r\n")
+                .await
+                .unwrap();
             let _ = read_response(&mut reader).await;
-            write_half.write_all(b"RCPT TO:<sieveuser@sieve-smtp.test>\r\n").await.unwrap();
+            write_half
+                .write_all(b"RCPT TO:<sieveuser@sieve-smtp.test>\r\n")
+                .await
+                .unwrap();
             let _ = read_response(&mut reader).await;
             write_half.write_all(b"DATA\r\n").await.unwrap();
             let _ = read_response(&mut reader).await;
             write_half.write_all(b"Subject: Store Receipt #1024\r\nFrom: store@localhost\r\nTo: sieveuser@sieve-smtp.test\r\n\r\nThank you for purchase.\r\n.\r\n").await.unwrap();
             let data_resp = read_response(&mut reader).await;
-            assert!(data_resp.starts_with("250"), "Expected 250 accepted, got: {data_resp}");
+            assert!(
+                data_resp.starts_with("250"),
+                "Expected 250 accepted, got: {data_resp}"
+            );
 
             // Verify stored in Archive folder
-            let archive_mb = db.get_mailbox_by_name(&user_id, "Archive").unwrap().expect("Archive mailbox should be created");
+            let archive_mb = db
+                .get_mailbox_by_name(&user_id, "Archive")
+                .unwrap()
+                .expect("Archive mailbox should be created");
             let msgs = db.get_messages_by_mailbox(&archive_mb.id).unwrap();
             assert_eq!(msgs.len(), 1);
-            assert_eq!(msgs[0].parsed_subject.as_deref(), Some("Store Receipt #1024"));
+            assert_eq!(
+                msgs[0].parsed_subject.as_deref(),
+                Some("Store Receipt #1024")
+            );
         }
 
         std::fs::remove_dir_all(&temp_dir).ok();

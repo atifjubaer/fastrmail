@@ -171,12 +171,8 @@ pub fn get_or_create_default_account(db: &Database) -> anyhow::Result<(Tenant, A
     let account = match db.get_account_by_email("postmaster@localhost")? {
         Some(a) => a,
         None => {
-            let _id = db.insert_account(
-                &tenant.id,
-                "postmaster",
-                "postmaster@localhost",
-                "admin123",
-            )?;
+            let _id =
+                db.insert_account(&tenant.id, "postmaster", "postmaster@localhost", "admin123")?;
             db.get_account_by_email("postmaster@localhost")?.unwrap()
         }
     };
@@ -829,7 +825,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         // Transactional Email API
         .route("/api/v1/email/send", post(send_email))
         // Webmail Endpoints
-        .route("/api/v1/mailboxes", get(list_mailboxes).post(create_mailbox_handler))
+        .route(
+            "/api/v1/mailboxes",
+            get(list_mailboxes).post(create_mailbox_handler),
+        )
         .route("/api/v1/mailbox", get(get_mailbox))
         .route(
             "/api/v1/message",
@@ -937,8 +936,8 @@ async fn main() -> anyhow::Result<()> {
 
     // 1. Spawn Inbound SMTP Server on :2525
     let smtp_db = Arc::clone(&db);
-    let smtp_server = SmtpServer::new(smtp_db, "data".to_string())
-        .with_search_engine(Arc::clone(&search_engine));
+    let smtp_server =
+        SmtpServer::new(smtp_db, "data".to_string()).with_search_engine(Arc::clone(&search_engine));
     tokio::spawn(async move {
         if let Err(e) = smtp_server.start("0.0.0.0:2525").await {
             tracing::error!("SMTP server error: {e}");
@@ -950,7 +949,8 @@ async fn main() -> anyhow::Result<()> {
     let sub_db = Arc::clone(&db);
     let sub_server = SmtpServer::new_submission(sub_db, "data".to_string())
         .with_search_engine(Arc::clone(&search_engine));
-    let sub_bind = std::env::var("FASTRMAIL_BIND_SUBMISSION").unwrap_or_else(|_| "0.0.0.0:2526".to_string());
+    let sub_bind =
+        std::env::var("FASTRMAIL_BIND_SUBMISSION").unwrap_or_else(|_| "0.0.0.0:2526".to_string());
     tokio::spawn(async move {
         if let Err(e) = sub_server.start(&sub_bind).await {
             tracing::error!("SMTP submission error on {sub_bind}: {e}");
@@ -971,7 +971,8 @@ async fn main() -> anyhow::Result<()> {
     // 4. Spawn POP3 Server on :1110 (Port 110)
     let pop3_db = Arc::clone(&db);
     let pop3_server = Pop3Server::new(pop3_db, "data".to_string());
-    let pop3_bind = std::env::var("FASTRMAIL_BIND_POP3").unwrap_or_else(|_| "0.0.0.0:1110".to_string());
+    let pop3_bind =
+        std::env::var("FASTRMAIL_BIND_POP3").unwrap_or_else(|_| "0.0.0.0:1110".to_string());
     tokio::spawn(async move {
         if let Err(e) = pop3_server.start(&pop3_bind).await {
             tracing::error!("POP3 server error on {pop3_bind}: {e}");
@@ -1019,7 +1020,8 @@ mod tests {
         db.init_schema().expect("Failed to init schema");
         let temp_dir = std::env::temp_dir().join(Uuid::new_v4().to_string());
         std::fs::create_dir_all(&temp_dir).unwrap();
-        let search_engine = Arc::new(SearchEngine::new_in_ram().expect("Failed to create in-ram search engine"));
+        let search_engine =
+            Arc::new(SearchEngine::new_in_ram().expect("Failed to create in-ram search engine"));
         Arc::new(AppState {
             db: Arc::new(db),
             data_dir: temp_dir.to_str().unwrap().to_string(),
@@ -1053,7 +1055,10 @@ mod tests {
         // Verify queued in database
         let pending = state.db.get_queue_pending().unwrap();
         assert_eq!(pending.len(), 1);
-        assert_eq!(pending[0].sender, "Marketing <marketing@fastrmail.example.com>");
+        assert_eq!(
+            pending[0].sender,
+            "Marketing <marketing@fastrmail.example.com>"
+        );
         assert_eq!(pending[0].recipient, "user@example.com");
 
         let _ = std::fs::remove_dir_all(&state.data_dir);
@@ -1062,7 +1067,12 @@ mod tests {
     #[tokio::test]
     async fn test_get_mailbox_empty() {
         let state = setup_test_state();
-        let res = get_mailbox(State(state.clone()), Query(MailboxFilterQuery { mailbox_id: None })).await.unwrap();
+        let res = get_mailbox(
+            State(state.clone()),
+            Query(MailboxFilterQuery { mailbox_id: None }),
+        )
+        .await
+        .unwrap();
         assert!(res.0.is_empty());
         let _ = std::fs::remove_dir_all(&state.data_dir);
     }

@@ -71,10 +71,9 @@ impl SearchEngine {
             .with_context(|| format!("Failed to create search index directory: {index_path}"))?;
 
         let (schema, fields) = SearchFields::build_schema();
-        let dir = MmapDirectory::open(path)
-            .context("Failed to open MmapDirectory for Tantivy")?;
-        let index = Index::open_or_create(dir, schema)
-            .context("Failed to open or create Tantivy index")?;
+        let dir = MmapDirectory::open(path).context("Failed to open MmapDirectory for Tantivy")?;
+        let index =
+            Index::open_or_create(dir, schema).context("Failed to open or create Tantivy index")?;
 
         let writer = index
             .writer(50_000_000)
@@ -229,15 +228,45 @@ mod tests {
     fn test_tantivy_index_and_search() {
         let engine = SearchEngine::new_in_ram().unwrap();
 
-        let m1 = create_test_message("msg-1", "acc-alice", "Monthly Invoice #1024", "billing@stripe.com");
-        let m2 = create_test_message("msg-2", "acc-alice", "Urgent security update required", "support@github.com");
-        let m3 = create_test_message("msg-3", "acc-alice", "Lunch meeting tomorrow?", "bob@friend.com");
-        let m4_bob = create_test_message("msg-4", "acc-bob", "Invoice for Bob", "billing@stripe.com");
+        let m1 = create_test_message(
+            "msg-1",
+            "acc-alice",
+            "Monthly Invoice #1024",
+            "billing@stripe.com",
+        );
+        let m2 = create_test_message(
+            "msg-2",
+            "acc-alice",
+            "Urgent security update required",
+            "support@github.com",
+        );
+        let m3 = create_test_message(
+            "msg-3",
+            "acc-alice",
+            "Lunch meeting tomorrow?",
+            "bob@friend.com",
+        );
+        let m4_bob =
+            create_test_message("msg-4", "acc-bob", "Invoice for Bob", "billing@stripe.com");
 
-        engine.index_message(&m1, "Here is your invoice for $49.00 USD for the subscription.").unwrap();
-        engine.index_message(&m2, "Please update your password immediately to protect your repositories.").unwrap();
-        engine.index_message(&m3, "Hey Alice, let's grab pizza tomorrow at noon.").unwrap();
-        engine.index_message(&m4_bob, "Bob's private invoice.").unwrap();
+        engine
+            .index_message(
+                &m1,
+                "Here is your invoice for $49.00 USD for the subscription.",
+            )
+            .unwrap();
+        engine
+            .index_message(
+                &m2,
+                "Please update your password immediately to protect your repositories.",
+            )
+            .unwrap();
+        engine
+            .index_message(&m3, "Hey Alice, let's grab pizza tomorrow at noon.")
+            .unwrap();
+        engine
+            .index_message(&m4_bob, "Bob's private invoice.")
+            .unwrap();
 
         // 1. Search for 'invoice' for Alice
         let alice_invoices = engine.search("acc-alice", "invoice", 10).unwrap();

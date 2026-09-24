@@ -27,8 +27,8 @@ impl Database {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("Failed to create directory for database: {path}"))?;
         }
-        let conn = Connection::open(path)
-            .with_context(|| format!("Failed to open database at {path}"))?;
+        let conn =
+            Connection::open(path).with_context(|| format!("Failed to open database at {path}"))?;
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
         Ok(Self {
             conn: Mutex::new(conn),
@@ -37,8 +37,7 @@ impl Database {
 
     /// Create an in-memory database (useful for testing).
     pub fn new_memory() -> Result<Self> {
-        let conn =
-            Connection::open_in_memory().context("Failed to open in-memory database")?;
+        let conn = Connection::open_in_memory().context("Failed to open in-memory database")?;
         conn.execute_batch("PRAGMA foreign_keys=ON;")?;
         Ok(Self {
             conn: Mutex::new(conn),
@@ -336,7 +335,10 @@ impl Database {
     /// Delete a mailbox and its messages.
     pub fn delete_mailbox(&self, mailbox_id: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
-        conn.execute("DELETE FROM messages WHERE mailbox_id = ?1", params![mailbox_id])?;
+        conn.execute(
+            "DELETE FROM messages WHERE mailbox_id = ?1",
+            params![mailbox_id],
+        )?;
         conn.execute("DELETE FROM mailboxes WHERE id = ?1", params![mailbox_id])?;
         Ok(())
     }
@@ -344,13 +346,17 @@ impl Database {
     /// Rename an existing mailbox.
     pub fn rename_mailbox(&self, mailbox_id: &str, new_name: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
-        conn.execute("UPDATE mailboxes SET name = ?1 WHERE id = ?2", params![new_name, mailbox_id])?;
+        conn.execute(
+            "UPDATE mailboxes SET name = ?1 WHERE id = ?2",
+            params![new_name, mailbox_id],
+        )?;
         Ok(())
     }
 
     // ─── Message CRUD ────────────────────────────────────────
 
     /// Insert a new message. Automatically assigns UID and modseq in a single combined query.
+    #[allow(clippy::too_many_arguments)]
     pub fn insert_message(
         &self,
         mailbox_id: &str,
@@ -741,7 +747,8 @@ impl Database {
     /// List all tenants registered in the system.
     pub fn list_all_tenants(&self) -> Result<Vec<Tenant>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT id, domain, created_at FROM tenants ORDER BY created_at DESC")?;
+        let mut stmt =
+            conn.prepare("SELECT id, domain, created_at FROM tenants ORDER BY created_at DESC")?;
         let rows = stmt.query_map([], |row| {
             Ok(Tenant {
                 id: row.get(0)?,
@@ -791,8 +798,14 @@ impl Database {
     /// Delete an account and all of its associated mailboxes and messages.
     pub fn delete_account(&self, account_id: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
-        conn.execute("DELETE FROM messages WHERE account_id = ?1", params![account_id])?;
-        conn.execute("DELETE FROM mailboxes WHERE account_id = ?1", params![account_id])?;
+        conn.execute(
+            "DELETE FROM messages WHERE account_id = ?1",
+            params![account_id],
+        )?;
+        conn.execute(
+            "DELETE FROM mailboxes WHERE account_id = ?1",
+            params![account_id],
+        )?;
         conn.execute("DELETE FROM accounts WHERE id = ?1", params![account_id])?;
         Ok(())
     }
@@ -800,9 +813,12 @@ impl Database {
     /// Retrieve global statistics for the admin dashboard.
     pub fn get_system_stats(&self) -> Result<SystemStats> {
         let conn = self.conn.lock().unwrap();
-        let tenants_count: i64 = conn.query_row("SELECT COUNT(*) FROM tenants", [], |r| r.get(0))?;
-        let accounts_count: i64 = conn.query_row("SELECT COUNT(*) FROM accounts", [], |r| r.get(0))?;
-        let messages_count: i64 = conn.query_row("SELECT COUNT(*) FROM messages", [], |r| r.get(0))?;
+        let tenants_count: i64 =
+            conn.query_row("SELECT COUNT(*) FROM tenants", [], |r| r.get(0))?;
+        let accounts_count: i64 =
+            conn.query_row("SELECT COUNT(*) FROM accounts", [], |r| r.get(0))?;
+        let messages_count: i64 =
+            conn.query_row("SELECT COUNT(*) FROM messages", [], |r| r.get(0))?;
         let queue_pending_count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM smtp_queue WHERE status = 'pending' OR status = 'retrying'",
             [],
@@ -854,9 +870,10 @@ impl Database {
                 if passed {
                     return Ok(true);
                 }
-                let first_seen = chrono::NaiveDateTime::parse_from_str(&first_seen_str, "%Y-%m-%d %H:%M:%S")
-                    .map(|ndt| ndt.and_utc())
-                    .unwrap_or_else(|_| Utc::now());
+                let first_seen =
+                    chrono::NaiveDateTime::parse_from_str(&first_seen_str, "%Y-%m-%d %H:%M:%S")
+                        .map(|ndt| ndt.and_utc())
+                        .unwrap_or_else(|_| Utc::now());
 
                 let elapsed_secs = (Utc::now() - first_seen).num_seconds();
                 if elapsed_secs >= window_seconds {
@@ -954,7 +971,8 @@ impl Database {
             if s.is_active {
                 if let Ok(rule) = serde_json::from_str::<SieveRule>(&s.script_json) {
                     rules.push(rule);
-                } else if let Ok(rule_vec) = serde_json::from_str::<Vec<SieveRule>>(&s.script_json) {
+                } else if let Ok(rule_vec) = serde_json::from_str::<Vec<SieveRule>>(&s.script_json)
+                {
                     rules.extend(rule_vec);
                 }
             }
@@ -1020,12 +1038,20 @@ mod tests {
         let tenant_id = db.insert_tenant("auth-test.com").unwrap();
 
         let account_id = db
-            .insert_account(&tenant_id, "bob", "bob@auth-test.com", "PlainSecretPassword!")
+            .insert_account(
+                &tenant_id,
+                "bob",
+                "bob@auth-test.com",
+                "PlainSecretPassword!",
+            )
             .unwrap();
         assert!(!account_id.is_empty());
 
         // Verify account stored hash, not plain text
-        let account = db.get_account_by_email("bob@auth-test.com").unwrap().unwrap();
+        let account = db
+            .get_account_by_email("bob@auth-test.com")
+            .unwrap()
+            .unwrap();
         assert!(account.password_hash.starts_with("$argon2id$"));
 
         // Verify correct login
@@ -1135,7 +1161,11 @@ mod tests {
         let db = setup_db();
         let tenant_id = db.insert_tenant("dkim-test.com").unwrap();
         let key_id = db
-            .insert_dkim_key(&tenant_id, "default", "-----BEGIN RSA PRIVATE KEY-----\ntest\n-----END RSA PRIVATE KEY-----")
+            .insert_dkim_key(
+                &tenant_id,
+                "default",
+                "-----BEGIN RSA PRIVATE KEY-----\ntest\n-----END RSA PRIVATE KEY-----",
+            )
             .unwrap();
         assert!(!key_id.is_empty());
 
@@ -1154,7 +1184,10 @@ mod tests {
 
         // Test insert and get_mailbox_by_name
         let mb_id = db.insert_mailbox(&account_id, "INBOX").unwrap();
-        let mb = db.get_mailbox_by_name(&account_id, "inbox").unwrap().unwrap();
+        let mb = db
+            .get_mailbox_by_name(&account_id, "inbox")
+            .unwrap()
+            .unwrap();
         assert_eq!(mb.id, mb_id);
         assert_eq!(mb.name, "INBOX");
 
@@ -1164,9 +1197,39 @@ mod tests {
         assert_eq!(renamed.name, "Archived");
 
         // Add 3 messages
-        let _m1 = db.insert_message(&mb_id, &account_id, "blob_1", 100, Some("Sub 1"), None, None).unwrap();
-        let _m2 = db.insert_message(&mb_id, &account_id, "blob_2", 200, Some("Sub 2"), None, None).unwrap();
-        let _m3 = db.insert_message(&mb_id, &account_id, "blob_3", 300, Some("Sub 3"), None, None).unwrap();
+        let _m1 = db
+            .insert_message(
+                &mb_id,
+                &account_id,
+                "blob_1",
+                100,
+                Some("Sub 1"),
+                None,
+                None,
+            )
+            .unwrap();
+        let _m2 = db
+            .insert_message(
+                &mb_id,
+                &account_id,
+                "blob_2",
+                200,
+                Some("Sub 2"),
+                None,
+                None,
+            )
+            .unwrap();
+        let _m3 = db
+            .insert_message(
+                &mb_id,
+                &account_id,
+                "blob_3",
+                300,
+                Some("Sub 3"),
+                None,
+                None,
+            )
+            .unwrap();
 
         // Check counts
         let (total, unseen) = db.get_mailbox_counts(&mb_id).unwrap();
@@ -1191,7 +1254,8 @@ mod tests {
         assert_eq!(range[1].uid, 3);
 
         // Mark msg 2 as Deleted
-        db.update_message_flags(&mb_id, 2, r#"["\\Deleted"]"#).unwrap();
+        db.update_message_flags(&mb_id, 2, r#"["\\Deleted"]"#)
+            .unwrap();
         let expunged = db.expunge_deleted_messages(&mb_id).unwrap();
         assert_eq!(expunged.len(), 1);
         assert_eq!(expunged[0].0, 2);
@@ -1211,12 +1275,18 @@ mod tests {
         let t1 = db.insert_tenant("tenant1.com").unwrap();
         let _t2 = db.insert_tenant("tenant2.com").unwrap();
 
-        let a1 = db.insert_account(&t1, "user1", "user1@tenant1.com", "pass").unwrap();
-        let a2 = db.insert_account(&t1, "user2", "user2@tenant1.com", "pass").unwrap();
+        let a1 = db
+            .insert_account(&t1, "user1", "user1@tenant1.com", "pass")
+            .unwrap();
+        let a2 = db
+            .insert_account(&t1, "user2", "user2@tenant1.com", "pass")
+            .unwrap();
 
         let mb = db.insert_mailbox(&a1, "INBOX").unwrap();
-        db.insert_message(&mb, &a1, "blob1", 100, Some("Hi"), None, None).unwrap();
-        db.queue_email(&t1, "blob1", "user1@tenant1.com", "ext@test.com").unwrap();
+        db.insert_message(&mb, &a1, "blob1", 100, Some("Hi"), None, None)
+            .unwrap();
+        db.queue_email(&t1, "blob1", "user1@tenant1.com", "ext@test.com")
+            .unwrap();
 
         let tenants = db.list_all_tenants().unwrap();
         assert_eq!(tenants.len(), 2);
@@ -1249,26 +1319,38 @@ mod tests {
 
         // 2. Immediate retry within window: still within 5 min window, returns false
         let immediate_retry = db.check_greylist(ip, sender, recipient).unwrap();
-        assert!(!immediate_retry, "Immediate retry within window must return false");
+        assert!(
+            !immediate_retry,
+            "Immediate retry within window must return false"
+        );
 
         // 3. Fast-forward by testing with a 0-second window or updating first_seen to 6 minutes ago
         let six_mins_ago = Utc::now() - chrono::Duration::minutes(6);
-        db.insert_greylist_record(ip, sender, recipient, six_mins_ago, false).unwrap();
+        db.insert_greylist_record(ip, sender, recipient, six_mins_ago, false)
+            .unwrap();
 
         // 4. Retry after delay: elapsed time > 5 min, should pass and update passed = true
         let retry_after_delay = db.check_greylist(ip, sender, recipient).unwrap();
-        assert!(retry_after_delay, "Retry after delay window must return true");
+        assert!(
+            retry_after_delay,
+            "Retry after delay window must return true"
+        );
 
         // 5. Subsequent attempts: already passed, returns true immediately
         let subsequent = db.check_greylist(ip, sender, recipient).unwrap();
-        assert!(subsequent, "Subsequent checks for passed tuple must return true");
+        assert!(
+            subsequent,
+            "Subsequent checks for passed tuple must return true"
+        );
     }
 
     #[test]
     fn test_sieve_scripts_crud() {
         let db = setup_db();
         let t1 = db.insert_tenant("sieve.test").unwrap();
-        let a1 = db.insert_account(&t1, "user", "user@sieve.test", "pass").unwrap();
+        let a1 = db
+            .insert_account(&t1, "user", "user@sieve.test", "pass")
+            .unwrap();
 
         let rule = SieveRule {
             id: "r1".to_string(),
@@ -1281,7 +1363,9 @@ mod tests {
         };
         let rule_json = serde_json::to_string(&rule).unwrap();
 
-        let s_id = db.insert_sieve_script(&a1, "Main Filter", &rule_json, true).unwrap();
+        let s_id = db
+            .insert_sieve_script(&a1, "Main Filter", &rule_json, true)
+            .unwrap();
         assert!(!s_id.is_empty());
 
         let scripts = db.get_sieve_scripts(&a1).unwrap();

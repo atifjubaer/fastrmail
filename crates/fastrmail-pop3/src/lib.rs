@@ -68,7 +68,9 @@ impl Pop3Server {
                     let db = Arc::clone(&self.db);
                     let data_dir = self.data_dir.clone();
                     tokio::spawn(async move {
-                        if let Err(e) = handle_pop3_connection(stream, peer_addr, db, data_dir).await {
+                        if let Err(e) =
+                            handle_pop3_connection(stream, peer_addr, db, data_dir).await
+                        {
                             error!("POP3 session error from {peer_addr}: {e}");
                         }
                     });
@@ -99,7 +101,9 @@ impl Pop3Server {
                         let db = Arc::clone(&db);
                         let data_dir = data_dir.clone();
                         tokio::spawn(async move {
-                            if let Err(e) = handle_pop3_connection(stream, peer_addr, db, data_dir).await {
+                            if let Err(e) =
+                                handle_pop3_connection(stream, peer_addr, db, data_dir).await
+                            {
                                 error!("POP3 session error from {peer_addr}: {e}");
                             }
                         });
@@ -156,7 +160,9 @@ async fn handle_pop3_connection(
             }
             "USER" => {
                 if session.state != ConnectionState::Authorization {
-                    writer.write_all(b"-ERR Unknown command in current state\r\n").await?;
+                    writer
+                        .write_all(b"-ERR Unknown command in current state\r\n")
+                        .await?;
                     continue;
                 }
                 if arg.is_empty() {
@@ -168,13 +174,17 @@ async fn handle_pop3_connection(
             }
             "PASS" => {
                 if session.state != ConnectionState::Authorization {
-                    writer.write_all(b"-ERR Unknown command in current state\r\n").await?;
+                    writer
+                        .write_all(b"-ERR Unknown command in current state\r\n")
+                        .await?;
                     continue;
                 }
                 let username = match &session.user {
                     Some(u) => u.clone(),
                     None => {
-                        writer.write_all(b"-ERR Send USER command first\r\n").await?;
+                        writer
+                            .write_all(b"-ERR Send USER command first\r\n")
+                            .await?;
                         continue;
                     }
                 };
@@ -183,11 +193,15 @@ async fn handle_pop3_connection(
                     Ok(Some(account)) => {
                         // Locate INBOX
                         let mailboxes = db.get_mailboxes(&account.id)?;
-                        let inbox = match mailboxes.into_iter().find(|m| m.name.eq_ignore_ascii_case("INBOX")) {
+                        let inbox = match mailboxes
+                            .into_iter()
+                            .find(|m| m.name.eq_ignore_ascii_case("INBOX"))
+                        {
                             Some(ib) => ib,
                             None => {
                                 let inbox_id = db.insert_mailbox(&account.id, "INBOX")?;
-                                db.get_mailbox_by_id(&inbox_id)?.context("INBOX not found")?
+                                db.get_mailbox_by_id(&inbox_id)?
+                                    .context("INBOX not found")?
                             }
                         };
 
@@ -216,10 +230,13 @@ async fn handle_pop3_connection(
             }
             "STAT" => {
                 if session.state != ConnectionState::Transaction {
-                    writer.write_all(b"-ERR Not in transaction state\r\n").await?;
+                    writer
+                        .write_all(b"-ERR Not in transaction state\r\n")
+                        .await?;
                     continue;
                 }
-                let non_deleted: Vec<&Pop3Message> = session.messages.iter().filter(|m| !m.deleted).collect();
+                let non_deleted: Vec<&Pop3Message> =
+                    session.messages.iter().filter(|m| !m.deleted).collect();
                 let count = non_deleted.len();
                 let total_size: i64 = non_deleted.iter().map(|m| m.message.size_bytes).sum();
                 writer
@@ -228,7 +245,9 @@ async fn handle_pop3_connection(
             }
             "LIST" => {
                 if session.state != ConnectionState::Transaction {
-                    writer.write_all(b"-ERR Not in transaction state\r\n").await?;
+                    writer
+                        .write_all(b"-ERR Not in transaction state\r\n")
+                        .await?;
                     continue;
                 }
                 if arg.is_empty() {
@@ -239,7 +258,8 @@ async fn handle_pop3_connection(
                         .filter(|(_, m)| !m.deleted)
                         .collect();
                     let count = non_deleted.len();
-                    let total_size: i64 = non_deleted.iter().map(|(_, m)| m.message.size_bytes).sum();
+                    let total_size: i64 =
+                        non_deleted.iter().map(|(_, m)| m.message.size_bytes).sum();
 
                     let mut resp = format!("+OK {count} messages ({total_size} octets)\r\n");
                     for (i, m) in non_deleted {
@@ -257,17 +277,23 @@ async fn handle_pop3_connection(
                     };
                     let m = &session.messages[msg_num - 1];
                     if m.deleted {
-                        writer.write_all(b"-ERR Message marked as deleted\r\n").await?;
+                        writer
+                            .write_all(b"-ERR Message marked as deleted\r\n")
+                            .await?;
                     } else {
                         writer
-                            .write_all(format!("+OK {} {}\r\n", msg_num, m.message.size_bytes).as_bytes())
+                            .write_all(
+                                format!("+OK {} {}\r\n", msg_num, m.message.size_bytes).as_bytes(),
+                            )
                             .await?;
                     }
                 }
             }
             "UIDL" => {
                 if session.state != ConnectionState::Transaction {
-                    writer.write_all(b"-ERR Not in transaction state\r\n").await?;
+                    writer
+                        .write_all(b"-ERR Not in transaction state\r\n")
+                        .await?;
                     continue;
                 }
                 if arg.is_empty() {
@@ -289,7 +315,9 @@ async fn handle_pop3_connection(
                     };
                     let m = &session.messages[msg_num - 1];
                     if m.deleted {
-                        writer.write_all(b"-ERR Message marked as deleted\r\n").await?;
+                        writer
+                            .write_all(b"-ERR Message marked as deleted\r\n")
+                            .await?;
                     } else {
                         writer
                             .write_all(format!("+OK {} {}\r\n", msg_num, m.message.id).as_bytes())
@@ -299,7 +327,9 @@ async fn handle_pop3_connection(
             }
             "RETR" => {
                 if session.state != ConnectionState::Transaction {
-                    writer.write_all(b"-ERR Not in transaction state\r\n").await?;
+                    writer
+                        .write_all(b"-ERR Not in transaction state\r\n")
+                        .await?;
                     continue;
                 }
                 let msg_num: usize = match arg.parse() {
@@ -312,7 +342,9 @@ async fn handle_pop3_connection(
 
                 let m = &session.messages[msg_num - 1];
                 if m.deleted {
-                    writer.write_all(b"-ERR Message marked as deleted\r\n").await?;
+                    writer
+                        .write_all(b"-ERR Message marked as deleted\r\n")
+                        .await?;
                     continue;
                 }
 
@@ -320,7 +352,9 @@ async fn handle_pop3_connection(
                 let content = match std::fs::read(&blob_path) {
                     Ok(b) => b,
                     Err(_) => {
-                        writer.write_all(b"-ERR Unable to read message content\r\n").await?;
+                        writer
+                            .write_all(b"-ERR Unable to read message content\r\n")
+                            .await?;
                         continue;
                     }
                 };
@@ -342,7 +376,9 @@ async fn handle_pop3_connection(
             }
             "DELE" => {
                 if session.state != ConnectionState::Transaction {
-                    writer.write_all(b"-ERR Not in transaction state\r\n").await?;
+                    writer
+                        .write_all(b"-ERR Not in transaction state\r\n")
+                        .await?;
                     continue;
                 }
                 let msg_num: usize = match arg.parse() {
@@ -354,17 +390,23 @@ async fn handle_pop3_connection(
                 };
 
                 if session.messages[msg_num - 1].deleted {
-                    writer.write_all(b"-ERR Message already deleted\r\n").await?;
+                    writer
+                        .write_all(b"-ERR Message already deleted\r\n")
+                        .await?;
                 } else {
                     session.messages[msg_num - 1].deleted = true;
                     writer
-                        .write_all(format!("+OK Message {msg_num} marked for deletion\r\n").as_bytes())
+                        .write_all(
+                            format!("+OK Message {msg_num} marked for deletion\r\n").as_bytes(),
+                        )
                         .await?;
                 }
             }
             "RSET" => {
                 if session.state != ConnectionState::Transaction {
-                    writer.write_all(b"-ERR Not in transaction state\r\n").await?;
+                    writer
+                        .write_all(b"-ERR Not in transaction state\r\n")
+                        .await?;
                     continue;
                 }
                 for m in &mut session.messages {
@@ -386,7 +428,9 @@ async fn handle_pop3_connection(
                         }
                     }
                 }
-                writer.write_all(b"+OK FastrMail POP3 server signing off\r\n").await?;
+                writer
+                    .write_all(b"+OK FastrMail POP3 server signing off\r\n")
+                    .await?;
                 break;
             }
             _ => {
@@ -418,11 +462,17 @@ mod tests {
         db.init_schema().expect("Failed to init schema");
         let tenant_id = db.insert_tenant("pop3.test").unwrap();
         let account_id = db
-            .insert_account(&tenant_id, "charlie", "charlie@pop3.test", "Pop3SecretPassword!")
+            .insert_account(
+                &tenant_id,
+                "charlie",
+                "charlie@pop3.test",
+                "Pop3SecretPassword!",
+            )
             .unwrap();
         let inbox_id = db.insert_mailbox(&account_id, "INBOX").unwrap();
 
-        let temp_dir = std::env::temp_dir().join(format!("fastrmail_pop3_{}", uuid::Uuid::new_v4()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("fastrmail_pop3_{}", uuid::Uuid::new_v4()));
         let blob_dir = temp_dir.join("blobs");
         std::fs::create_dir_all(&blob_dir).unwrap();
         let data_dir = temp_dir.to_string_lossy().to_string();
@@ -432,11 +482,37 @@ mod tests {
         let blob2 = "blob-pop3-2";
         let path1 = blob_dir.join(format!("{blob1}.eml"));
         let path2 = blob_dir.join(format!("{blob2}.eml"));
-        std::fs::write(&path1, b"From: a@test.com\r\nSubject: Test 1\r\n\r\nHello POP3 1").unwrap();
-        std::fs::write(&path2, b"From: b@test.com\r\nSubject: Test 2\r\n\r\nHello POP3 2").unwrap();
+        std::fs::write(
+            &path1,
+            b"From: a@test.com\r\nSubject: Test 1\r\n\r\nHello POP3 1",
+        )
+        .unwrap();
+        std::fs::write(
+            &path2,
+            b"From: b@test.com\r\nSubject: Test 2\r\n\r\nHello POP3 2",
+        )
+        .unwrap();
 
-        db.insert_message(&inbox_id, &account_id, blob1, 45, Some("Test 1"), Some("a@test.com"), Some("charlie@pop3.test")).unwrap();
-        db.insert_message(&inbox_id, &account_id, blob2, 45, Some("Test 2"), Some("b@test.com"), Some("charlie@pop3.test")).unwrap();
+        db.insert_message(
+            &inbox_id,
+            &account_id,
+            blob1,
+            45,
+            Some("Test 1"),
+            Some("a@test.com"),
+            Some("charlie@pop3.test"),
+        )
+        .unwrap();
+        db.insert_message(
+            &inbox_id,
+            &account_id,
+            blob2,
+            45,
+            Some("Test 2"),
+            Some("b@test.com"),
+            Some("charlie@pop3.test"),
+        )
+        .unwrap();
 
         let db = Arc::new(db);
         let server = Pop3Server::new(Arc::clone(&db), data_dir.clone());
@@ -464,7 +540,10 @@ mod tests {
         }
 
         // 3. Bad Auth
-        write_half.write_all(b"USER charlie@pop3.test\r\n").await.unwrap();
+        write_half
+            .write_all(b"USER charlie@pop3.test\r\n")
+            .await
+            .unwrap();
         let user_resp = read_line(&mut reader).await;
         assert!(user_resp.starts_with("+OK"));
 
@@ -473,12 +552,22 @@ mod tests {
         assert!(bad_pass.starts_with("-ERR"));
 
         // 4. Good Auth
-        write_half.write_all(b"USER charlie@pop3.test\r\n").await.unwrap();
+        write_half
+            .write_all(b"USER charlie@pop3.test\r\n")
+            .await
+            .unwrap();
         let _ = read_line(&mut reader).await;
-        write_half.write_all(b"PASS Pop3SecretPassword!\r\n").await.unwrap();
+        write_half
+            .write_all(b"PASS Pop3SecretPassword!\r\n")
+            .await
+            .unwrap();
         let good_pass = read_line(&mut reader).await;
         assert!(good_pass.starts_with("+OK"));
-        assert!(good_pass.contains("2 messages"), "got good_pass = {:?}", good_pass);
+        assert!(
+            good_pass.contains("2 messages"),
+            "got good_pass = {:?}",
+            good_pass
+        );
 
         // 5. STAT
         write_half.write_all(b"STAT\r\n").await.unwrap();
