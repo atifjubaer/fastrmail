@@ -15,6 +15,7 @@ use tracing::{error, info, warn};
 use fastrmail_auth::DkimSigner;
 use fastrmail_core::QueueItem;
 use fastrmail_store::Database;
+use uuid::Uuid;
 
 /// Delivery engine that processes queued outbound emails.
 pub struct OutboundEngine {
@@ -98,6 +99,9 @@ impl OutboundEngine {
                 if new_retry >= 5 {
                     warn!("Item {} exceeded max retries (5). Marking as failed.", item.id);
                     let _ = self.db.update_queue_status(&item.id, "failed", None, new_retry);
+                    if let Err(ndr_err) = self.generate_and_store_ndr(&item, &e.to_string()) {
+                        error!("Failed to generate NDR for item {}: {ndr_err}", item.id);
+                    }
                 } else {
                     let next_retry_at = calculate_next_retry(new_retry);
                     info!(
@@ -113,6 +117,81 @@ impl OutboundEngine {
                 }
             }
         }
+    }
+
+    /// Generate a Non-Delivery Report (NDR) email and store it in the original sender's INBOX.
+    pub fn generate_and_store_ndr(&self, item: &QueueItem, error_msg: &str) -> Result<()> {
+        let sender_account = match self.db.get_account_by_email(&item.sender)? {
+            Some(acc) => acc,
+            None => {
+                info!("Sender {} is not a local account, skipping local NDR storage", item.sender);
+                return Ok(());
+            }
+        };
+
+        let mailbox = match self.db.get_mailbox_by_name(&sender_account.id, "INBOX")? {
+            Some(mb) => mb,
+            None => {
+                let mb_id = self.db.insert_mailbox(&sender_account.id, "INBOX")?;
+                self.db.get_mailbox_by_id(&mb_id)?.context("Failed to retrieve created INBOX")?
+            }
+        };
+
+        let sender_domain = item.sender.split('@').nth(1).unwrap_or("fastrmail.local");
+        let ndr_from = format!("MAILER-DAEMON@{sender_domain}");
+        let ndr_subject = format!("Undelivered Mail Returned to Sender: Delivery Failure to {}", item.recipient);
+        let now = Utc::now();
+        let date_str = now.to_rfc2822();
+        let ndr_blob_id = format!("ndr_{}", Uuid::new_v4());
+
+        let body = format!(
+            "This is the mail system at FastrMail host {sender_domain}.\r\n\r\n\
+             I'm sorry to have to inform you that your message could not\r\n\
+             be delivered to one or more recipients. It's attached below.\r\n\r\n\
+             For further assistance, please send mail to postmaster.\r\n\r\n\
+             If you do so, please include this problem report. You can\r\n\
+             delete your own text from the attached returned message.\r\n\r\n\
+                                The mail system\r\n\r\n\
+             <{recipient}>: Delivery failed after 5 retry attempts.\r\n\
+             Diagnostic-Code: smtp; {error_msg}\r\n",
+            recipient = item.recipient,
+            error_msg = error_msg,
+        );
+
+        let raw_ndr = format!(
+            "From: {ndr_from}\r\n\
+             To: {to}\r\n\
+             Subject: {ndr_subject}\r\n\
+             Date: {date_str}\r\n\
+             MIME-Version: 1.0\r\n\
+             Content-Type: text/plain; charset=utf-8\r\n\
+             Auto-Submitted: auto-replied\r\n\
+             \r\n\
+             {body}",
+            to = item.sender,
+        );
+
+        let blob_dir = format!("{}/blobs", self.data_dir);
+        std::fs::create_dir_all(&blob_dir)?;
+        let blob_path = format!("{blob_dir}/{ndr_blob_id}.eml");
+        std::fs::write(&blob_path, raw_ndr.as_bytes())?;
+
+        let msg_id = self.db.insert_message(
+            &mailbox.id,
+            &sender_account.id,
+            &ndr_blob_id,
+            raw_ndr.len() as i64,
+            Some(&ndr_subject),
+            Some(&ndr_from),
+            Some(&item.sender),
+        )?;
+
+        info!(
+            "Generated Non-Delivery Report {} for sender {} in INBOX",
+            msg_id, item.sender
+        );
+
+        Ok(())
     }
 
     /// Perform the end-to-end SMTP delivery handshake to the destination MX.
@@ -300,5 +379,79 @@ mod tests {
         assert!(r3 > now + ChronoDuration::minutes(55));
         assert!(r4 > now + ChronoDuration::hours(3));
         assert!(r5 > now + ChronoDuration::hours(23));
+    }
+
+    #[tokio::test]
+    async fn test_ndr_generation_on_max_retries() {
+        let db = Database::new_memory().expect("Failed to create in-memory DB");
+        db.init_schema().expect("Failed to init schema");
+        let db = Arc::new(db);
+
+        let temp_dir = std::env::temp_dir().join(format!("fastrmail_ndr_test_{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let data_dir = temp_dir.to_string_lossy().to_string();
+
+        // 1. Create tenant and local sender account with INBOX
+        let tenant_id = db.insert_tenant("senderdomain.org").unwrap();
+        let account_id = db
+            .insert_account(&tenant_id, "alice", "alice@senderdomain.org", "Pass123!")
+            .unwrap();
+        let inbox_id = db.insert_mailbox(&account_id, "INBOX").unwrap();
+
+        // 2. Create raw message blob for outgoing mail
+        let blob_dir = format!("{data_dir}/blobs");
+        std::fs::create_dir_all(&blob_dir).unwrap();
+        let blob_id = format!("blob_{}", Uuid::new_v4());
+        let blob_path = format!("{blob_dir}/{blob_id}.eml");
+        std::fs::write(&blob_path, b"Subject: Hello world\r\n\r\nHi!").unwrap();
+
+        // 3. Queue item with retry_count = 4 (next attempt will be 5, exceeding limit)
+        let queue_id = db
+            .queue_email(
+                &tenant_id,
+                &blob_id,
+                "alice@senderdomain.org",
+                "recipient@unreachable-domain-xyz123.com",
+            )
+            .unwrap();
+
+        // Update retry_count to 4 in database
+        db.update_queue_status(&queue_id, "retrying", None, 4).unwrap();
+
+        let queue_item = db
+            .get_queue_pending()
+            .unwrap()
+            .into_iter()
+            .find(|item| item.id == queue_id)
+            .expect("Queue item must exist");
+
+        // 4. Run deliver_one on engine with invalid override port (immediate connection failure)
+        let engine = OutboundEngine::with_port(Arc::clone(&db), data_dir.clone(), 1);
+        engine.deliver_one(queue_item).await;
+
+        // 5. Verify queue status is failed
+        let queue_item_after = db.get_queue_pending().unwrap();
+        assert!(
+            queue_item_after.is_empty(),
+            "Failed queue item must no longer be pending"
+        );
+
+        // 6. Verify NDR message was inserted into alice's INBOX
+        let messages = db.get_messages_by_mailbox(&inbox_id).unwrap();
+        assert_eq!(messages.len(), 1, "Alice should have received 1 NDR message in INBOX");
+        let ndr = &messages[0];
+        assert!(
+            ndr.parsed_subject.as_ref().unwrap().contains("Undelivered Mail Returned to Sender"),
+            "Subject must indicate delivery failure"
+        );
+        assert_eq!(ndr.parsed_to.as_deref(), Some("alice@senderdomain.org"));
+
+        // Verify NDR blob exists on disk
+        let ndr_path = format!("{blob_dir}/{}.eml", ndr.blob_id);
+        let ndr_content = std::fs::read_to_string(&ndr_path).unwrap();
+        assert!(ndr_content.contains("Delivery failed after 5 retry attempts"));
+        assert!(ndr_content.contains("Auto-Submitted: auto-replied"));
+
+        std::fs::remove_dir_all(&temp_dir).ok();
     }
 }
