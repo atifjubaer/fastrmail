@@ -3,15 +3,15 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: fastrmail:latest
-    container_name: fastrmail
+    image: ${DOCKER_IMAGE:-fastrmail:latest}
+    container_name: ${CONTAINER_NAME:-fastrmail}
     restart: unless-stopped
     ports:
-      # SMTP Inbound (RFC 5321) - Maps host port 25 to container 2525
+      # SMTP Inbound (RFC 5321)
       - "${SMTP_PORT:-25}:2525"
-      # IMAP4rev2 (RFC 9051) - Maps host port 143 to container 1143
+      # IMAP4rev2 (RFC 9051)
       - "${IMAP_PORT:-143}:1143"
-      # HTTP Webmail, Admin Dashboard, REST API & JMAP - Maps host port 8080 to container 8080
+      # HTTP — Webmail, Admin Dashboard, REST API & JMAP
       - "${HTTP_PORT:-8080}:8080"
     environment:
       - RUST_LOG=${RUST_LOG:-info}
@@ -19,11 +19,42 @@ services:
       - FASTRMAIL_BIND_SMTP=0.0.0.0:2525
       - FASTRMAIL_BIND_IMAP=0.0.0.0:1143
       - FASTRMAIL_BIND_HTTP=0.0.0.0:8080
+      - FASTRMAIL_HOSTNAME=${FASTRMAIL_HOSTNAME:-mail.example.com}
+      - FASTRMAIL_ADMIN_USER=${FASTRMAIL_ADMIN_USER:-admin}
+      - FASTRMAIL_ADMIN_PASS=${FASTRMAIL_ADMIN_PASS:-changeme}
+      - FASTRMAIL_PRIMARY_DOMAIN=${FASTRMAIL_PRIMARY_DOMAIN:-example.com}
     volumes:
-      - ${DATA_PATH:-./fastrmail_data}:/app/data
+      - ${DATA_PATH:-fastrmail_data}:/app/data
+    networks:
+      - default
+      - dokploy-network
+    labels:
+      # Traefik auto-discovery (Dokploy / Coolify compatible)
+      - "traefik.enable=true"
+      # HTTP Router — Webmail & Admin UI
+      - "traefik.http.routers.fastrmail-http.rule=Host(`${FASTRMAIL_HOSTNAME:-mail.example.com}`)"
+      - "traefik.http.routers.fastrmail-http.entrypoints=websecure"
+      - "traefik.http.routers.fastrmail-http.tls.certresolver=letsencrypt"
+      - "traefik.http.services.fastrmail-http.loadbalancer.server.port=8080"
+      # TCP Router — SMTP Inbound
+      - "traefik.tcp.routers.fastrmail-smtp.rule=HostSNI(`*`)"
+      - "traefik.tcp.routers.fastrmail-smtp.entrypoints=smtp"
+      - "traefik.tcp.services.fastrmail-smtp.loadbalancer.server.port=2525"
+      # TCP Router — IMAP
+      - "traefik.tcp.routers.fastrmail-imap.rule=HostSNI(`*`)"
+      - "traefik.tcp.routers.fastrmail-imap.entrypoints=imap"
+      - "traefik.tcp.services.fastrmail-imap.loadbalancer.server.port=1143"
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/api/health || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 3
       start_period: 10s
+
+volumes:
+  fastrmail_data:
+    driver: local
+
+networks:
+  dokploy-network:
+    external: true

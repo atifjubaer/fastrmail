@@ -11,7 +11,7 @@
 
 A high-performance, single-binary mail server written in Rust. Built for speed, security, and simplicity.
 
-[Features](#features) • [Quick Start](#quick-start) • [Documentation](#documentation) • [Contributing](#contributing)
+[**🌐 Website**](https://fastrmail.vercel.app) • [**📖 Documentation**](https://fastrmail.vercel.app/docs) • [Features](#-features) • [Quick Start](#-quick-start) • [Contributing](#-contributing)
 
 </div>
 
@@ -21,7 +21,6 @@ A high-performance, single-binary mail server written in Rust. Built for speed, 
 - **SMTP**: RFC 5321 Inbound & Outbound (with SPF/DKIM/DMARC/SpamGuard).
 - **IMAP4rev2**: RFC 9051 full-featured mail server.
 - **JMAP**: RFC 8620/8621 for modern, fast, offline-first clients.
-- **POP3**: Legacy protocol support (Roadmap).
 
 ### Advanced Security
 - **Greylisting**: 5-minute retry window to enforce legitimate senders.
@@ -64,9 +63,20 @@ cargo build --release
 ./target/release/fastrmail
 ```
 
+### Dokploy / Coolify (One-Click)
+
+Import `docker-compose.yml` or `dokploy-service-template.yaml` directly into your Dokploy dashboard. Traefik labels are pre-configured for automatic HTTPS routing.
+
 ## 📖 Documentation
 
-For detailed guides on setup, DNS configuration, and architecture, visit the [official documentation](https://fastrmail.vercel.app).
+For detailed guides on setup, DNS configuration, and architecture:
+
+| Resource | URL |
+|:---------|:----|
+| **Landing Page** | [fastrmail.vercel.app](https://fastrmail.vercel.app) |
+| **Technical Docs** | [docs/](./docs/) (VitePress) |
+| **API Reference** | [docs/guide/api-reference.md](./docs/guide/api-reference.md) |
+| **Enterprise Roadmap** | [docs/guide/roadmap.md](./docs/guide/roadmap.md) |
 
 ## 🤝 Contributing
 
