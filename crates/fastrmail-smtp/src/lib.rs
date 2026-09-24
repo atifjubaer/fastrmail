@@ -26,6 +26,7 @@ pub struct SmtpServer {
     search_engine: Option<Arc<SearchEngine>>,
     dnsbl_verifier: Option<Arc<DnsblVerifier>>,
     bypass_spam_check: bool,
+    is_submission: bool,
 }
 
 /// Internal state of a single SMTP session.
@@ -39,6 +40,8 @@ struct SmtpSession {
     recipients: Vec<String>,
     /// Whether the client has sent EHLO/HELO.
     greeted: bool,
+    /// The authenticated username/email, if AUTH was successful.
+    authenticated_user: Option<String>,
 }
 
 impl SmtpSession {
@@ -48,6 +51,7 @@ impl SmtpSession {
             sender: None,
             recipients: Vec::new(),
             greeted: false,
+            authenticated_user: None,
         }
     }
 
@@ -66,7 +70,26 @@ impl SmtpServer {
             search_engine: None,
             dnsbl_verifier: Some(Arc::new(DnsblVerifier::new())),
             bypass_spam_check: false,
+            is_submission: false,
         }
+    }
+
+    /// Create a new SMTP submission server (e.g. for port 587) where authentication is mandatory.
+    pub fn new_submission(db: Arc<Database>, data_dir: String) -> Self {
+        Self {
+            db,
+            data_dir,
+            search_engine: None,
+            dnsbl_verifier: None,
+            bypass_spam_check: true,
+            is_submission: true,
+        }
+    }
+
+    /// Configure whether this server operates in client submission mode (requires AUTH).
+    pub fn with_submission(mut self, submission: bool) -> Self {
+        self.is_submission = submission;
+        self
     }
 
     /// Attach an optional Tantivy SearchEngine for automatic inbound email indexing.
@@ -104,8 +127,9 @@ impl SmtpServer {
                     let search_engine = self.search_engine.clone();
                     let dnsbl = self.dnsbl_verifier.clone();
                     let bypass = self.bypass_spam_check;
+                    let is_sub = self.is_submission;
                     tokio::spawn(async move {
-                        if let Err(e) = handle_connection(stream, peer_addr, db, data_dir, search_engine, dnsbl, bypass).await {
+                        if let Err(e) = handle_connection(stream, peer_addr, db, data_dir, search_engine, dnsbl, bypass, is_sub).await {
                             error!("SMTP session error from {peer_addr}: {e}");
                         }
                     });
@@ -132,6 +156,7 @@ impl SmtpServer {
         let search_engine = self.search_engine.clone();
         let dnsbl = self.dnsbl_verifier.clone();
         let bypass = self.bypass_spam_check;
+        let is_sub = self.is_submission;
 
         tokio::spawn(async move {
             loop {
@@ -143,7 +168,7 @@ impl SmtpServer {
                         let search_engine = search_engine.clone();
                         let dnsbl = dnsbl.clone();
                         tokio::spawn(async move {
-                            if let Err(e) = handle_connection(stream, peer_addr, db, data_dir, search_engine, dnsbl, bypass).await {
+                            if let Err(e) = handle_connection(stream, peer_addr, db, data_dir, search_engine, dnsbl, bypass, is_sub).await {
                                 error!("SMTP session error from {peer_addr}: {e}");
                             }
                         });
@@ -157,6 +182,19 @@ impl SmtpServer {
         });
 
         Ok(local_addr)
+    }
+
+    /// Start a submission SMTP listener and return the actual bound address.
+    pub async fn start_submission_with_addr(&self, addr: &str) -> Result<SocketAddr> {
+        let submission_server = Self {
+            db: Arc::clone(&self.db),
+            data_dir: self.data_dir.clone(),
+            search_engine: self.search_engine.clone(),
+            dnsbl_verifier: None,
+            bypass_spam_check: true,
+            is_submission: true,
+        };
+        submission_server.start_with_addr(addr).await
     }
 }
 
@@ -192,6 +230,7 @@ async fn handle_connection(
     search_engine: Option<Arc<SearchEngine>>,
     dnsbl_verifier: Option<Arc<DnsblVerifier>>,
     bypass_spam_check: bool,
+    is_submission: bool,
 ) -> Result<()> {
     let (reader, mut writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
@@ -226,12 +265,109 @@ async fn handle_connection(
             };
             session.helo = Some(domain_part);
             writer
-                .write_all(b"250-FastrMail\r\n250-SIZE 52428800\r\n250-8BITMIME\r\n250 OK\r\n")
+                .write_all(b"250-FastrMail\r\n250-SIZE 52428800\r\n250-8BITMIME\r\n250-AUTH PLAIN LOGIN\r\n250 OK\r\n")
                 .await?;
+        } else if upper.starts_with("AUTH ") || upper == "AUTH" {
+            let mechanism_part = if upper == "AUTH" { "" } else { line[4..].trim() };
+            let upper_mech = mechanism_part.to_uppercase();
+
+            if upper_mech.starts_with("PLAIN") {
+                let auth_arg = mechanism_part["PLAIN".len()..].trim();
+                let b64_payload = if !auth_arg.is_empty() {
+                    auth_arg.to_string()
+                } else {
+                    writer.write_all(b"334 \r\n").await?;
+                    let mut resp_buf = String::new();
+                    let n = reader.read_line(&mut resp_buf).await?;
+                    if n == 0 {
+                        break;
+                    }
+                    resp_buf.trim().to_string()
+                };
+
+                let mut clean_b64 = b64_payload.clone();
+                clean_b64.retain(|c| !c.is_whitespace());
+                use base64::Engine;
+                let decoded = base64::engine::general_purpose::STANDARD.decode(clean_b64);
+
+                let mut authenticated = false;
+                if let Ok(bytes) = decoded {
+                    let parts: Vec<&[u8]> = bytes.split(|&b| b == 0).collect();
+                    let (user, pass) = if parts.len() >= 3 {
+                        (String::from_utf8_lossy(parts[1]), String::from_utf8_lossy(parts[2]))
+                    } else if parts.len() == 2 {
+                        (String::from_utf8_lossy(parts[0]), String::from_utf8_lossy(parts[1]))
+                    } else {
+                        (std::borrow::Cow::Borrowed(""), std::borrow::Cow::Borrowed(""))
+                    };
+
+                    if !user.is_empty() {
+                        if let Ok(Some(account)) = db.verify_login(&user, &pass) {
+                            session.authenticated_user = Some(account.email);
+                            authenticated = true;
+                        }
+                    }
+                }
+
+                if authenticated {
+                    writer.write_all(b"235 2.7.0 Authentication successful\r\n").await?;
+                } else {
+                    writer.write_all(b"535 5.7.8 Authentication credentials invalid\r\n").await?;
+                }
+            } else if upper_mech.starts_with("LOGIN") {
+                let auth_arg = mechanism_part["LOGIN".len()..].trim();
+                let user_b64 = if !auth_arg.is_empty() {
+                    auth_arg.to_string()
+                } else {
+                    writer.write_all(b"334 VXNlcm5hbWU6\r\n").await?;
+                    let mut resp_buf = String::new();
+                    let n = reader.read_line(&mut resp_buf).await?;
+                    if n == 0 {
+                        break;
+                    }
+                    resp_buf.trim().to_string()
+                };
+
+                writer.write_all(b"334 UGFzc3dvcmQ6\r\n").await?;
+                let mut pass_buf = String::new();
+                let n = reader.read_line(&mut pass_buf).await?;
+                if n == 0 {
+                    break;
+                }
+                let pass_b64 = pass_buf.trim().to_string();
+
+                use base64::Engine;
+                let user_dec = base64::engine::general_purpose::STANDARD.decode(user_b64.trim());
+                let pass_dec = base64::engine::general_purpose::STANDARD.decode(pass_b64.trim());
+
+                let mut authenticated = false;
+                if let (Ok(u_bytes), Ok(p_bytes)) = (user_dec, pass_dec) {
+                    let user = String::from_utf8_lossy(&u_bytes);
+                    let pass = String::from_utf8_lossy(&p_bytes);
+                    if let Ok(Some(account)) = db.verify_login(&user, &pass) {
+                        session.authenticated_user = Some(account.email);
+                        authenticated = true;
+                    }
+                }
+
+                if authenticated {
+                    writer.write_all(b"235 2.7.0 Authentication successful\r\n").await?;
+                } else {
+                    writer.write_all(b"535 5.7.8 Authentication credentials invalid\r\n").await?;
+                }
+            } else {
+                writer.write_all(b"504 5.5.4 Unrecognized authentication mechanism\r\n").await?;
+            }
         } else if upper.starts_with("MAIL FROM:") {
             if !session.greeted {
                 writer
                     .write_all(b"503 Send EHLO/HELO first\r\n")
+                    .await?;
+                continue;
+            }
+            if is_submission && session.authenticated_user.is_none() {
+                writer
+                    .write_all(b"530 5.7.0 Authentication required\r\n")
                     .await?;
                 continue;
             }
@@ -251,7 +387,8 @@ async fn handle_connection(
             let sender = session.sender.as_deref().unwrap_or("");
 
             // Spam & Reputation Verification (DNSBL + Greylisting)
-            if !bypass_spam_check {
+            let skip_spam = bypass_spam_check || session.authenticated_user.is_some();
+            if !skip_spam {
                 // 1. DNSBL check
                 if let Some(dnsbl) = &dnsbl_verifier {
                     if dnsbl.check_ip(peer_addr.ip()).await.unwrap_or(false) {
@@ -282,6 +419,12 @@ async fn handle_connection(
             session.recipients.push(recipient);
             writer.write_all(b"250 OK\r\n").await?;
         } else if upper == "DATA" {
+            if is_submission && session.authenticated_user.is_none() {
+                writer
+                    .write_all(b"530 5.7.0 Authentication required\r\n")
+                    .await?;
+                continue;
+            }
             if session.recipients.is_empty() {
                 writer
                     .write_all(b"503 Send RCPT TO first\r\n")
@@ -923,6 +1066,77 @@ mod tests {
         assert!(rcpt_resp.starts_with("554"), "Expected 554 DNSBL block, got: {rcpt_resp}");
         assert!(rcpt_resp.contains("blocked using DNSBL"));
 
+        std::fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[tokio::test]
+    async fn test_smtp_submission_auth_flow() {
+        let db = Database::new_memory().expect("Failed to create in-memory DB");
+        db.init_schema().expect("Failed to init schema");
+        let tenant_id = db.insert_tenant("submission.test").unwrap();
+        db.insert_account(&tenant_id, "alice", "alice@submission.test", "CorrectPassword123!").unwrap();
+        let db = Arc::new(db);
+
+        let temp_dir = std::env::temp_dir().join(format!("fastrmail_sub_{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let data_dir = temp_dir.to_string_lossy().to_string();
+
+        let server = SmtpServer::new_submission(Arc::clone(&db), data_dir.clone());
+        let addr = server.start_with_addr("127.0.0.1:0").await.unwrap();
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let stream = TcpStream::connect(addr).await.unwrap();
+        let (read_half, mut write_half) = stream.into_split();
+        let mut reader = BufReader::new(read_half);
+
+        let greeting = read_response(&mut reader).await;
+        assert!(greeting.starts_with("220"));
+
+        write_half.write_all(b"EHLO client.test\r\n").await.unwrap();
+        let ehlo_resp = read_multiline_response(&mut reader).await;
+        assert!(ehlo_resp.iter().any(|l| l.contains("AUTH PLAIN LOGIN")), "EHLO should advertise AUTH PLAIN LOGIN, got: {:?}", ehlo_resp);
+
+        // 1. Attempt MAIL FROM without authentication on submission port -> 530
+        write_half.write_all(b"MAIL FROM:<alice@submission.test>\r\n").await.unwrap();
+        let unauth_resp = read_response(&mut reader).await;
+        assert!(unauth_resp.starts_with("530"), "Expected 530 Auth required, got: {unauth_resp}");
+
+        // 2. Attempt AUTH PLAIN with wrong password -> 535
+        use base64::Engine;
+        let bad_plain = "\0alice@submission.test\0WrongPassword";
+        let bad_b64 = base64::engine::general_purpose::STANDARD.encode(bad_plain);
+        write_half.write_all(format!("AUTH PLAIN {bad_b64}\r\n").as_bytes()).await.unwrap();
+        let bad_auth_resp = read_response(&mut reader).await;
+        assert!(bad_auth_resp.starts_with("535"), "Expected 535 Bad credentials, got: {bad_auth_resp}");
+
+        // 3. Attempt AUTH PLAIN with correct credentials -> 235
+        let good_plain = "\0alice@submission.test\0CorrectPassword123!";
+        let good_b64 = base64::engine::general_purpose::STANDARD.encode(good_plain);
+        write_half.write_all(format!("AUTH PLAIN {good_b64}\r\n").as_bytes()).await.unwrap();
+        let good_auth_resp = read_response(&mut reader).await;
+        assert!(good_auth_resp.starts_with("235"), "Expected 235 Auth success, got: {good_auth_resp}");
+
+        // 4. Now MAIL FROM should succeed
+        write_half.write_all(b"MAIL FROM:<alice@submission.test>\r\n").await.unwrap();
+        let mail_resp = read_response(&mut reader).await;
+        assert!(mail_resp.starts_with("250"), "Expected 250 OK for MAIL FROM, got: {mail_resp}");
+
+        // 5. RCPT TO
+        write_half.write_all(b"RCPT TO:<bob@submission.test>\r\n").await.unwrap();
+        let rcpt_resp = read_response(&mut reader).await;
+        assert!(rcpt_resp.starts_with("250"), "Expected 250 OK for RCPT TO, got: {rcpt_resp}");
+
+        // 6. DATA
+        write_half.write_all(b"DATA\r\n").await.unwrap();
+        let data_prompt = read_response(&mut reader).await;
+        assert!(data_prompt.starts_with("354"), "Expected 354, got: {data_prompt}");
+
+        write_half.write_all(b"From: alice@submission.test\r\nTo: bob@submission.test\r\nSubject: Submission Test\r\n\r\nHello via port 587!\r\n.\r\n").await.unwrap();
+        let data_ok = read_response(&mut reader).await;
+        assert!(data_ok.starts_with("250"), "Expected 250 OK for DATA, got: {data_ok}");
+
+        write_half.write_all(b"QUIT\r\n").await.unwrap();
         std::fs::remove_dir_all(&temp_dir).ok();
     }
 }
