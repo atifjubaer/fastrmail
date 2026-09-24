@@ -20,24 +20,17 @@ RUN cd web/admin && npm run build
 # Stage 2: Build Rust Backend
 # ==============================================================================
 FROM rust:1.81-alpine AS backend-builder
-RUN apk add --no-cache musl-dev sqlite-dev openssl-dev build-base pkgconfig
+
+# Install required build toolchain including cmake & perl for sys-crates (zstd-sys, lzma-sys, bzip2-sys)
+RUN apk add --no-cache musl-dev sqlite-dev openssl-dev build-base pkgconfig cmake perl
 
 WORKDIR /app
 
 # Copy workspace manifest and lockfile
 COPY Cargo.toml Cargo.lock* ./
-COPY crates/fastrmail-core/Cargo.toml ./crates/fastrmail-core/
-COPY crates/fastrmail-auth/Cargo.toml ./crates/fastrmail-auth/
-COPY crates/fastrmail-store/Cargo.toml ./crates/fastrmail-store/
-COPY crates/fastrmail-search/Cargo.toml ./crates/fastrmail-search/
-COPY crates/fastrmail-smtp/Cargo.toml ./crates/fastrmail-smtp/
-COPY crates/fastrmail-pop3/Cargo.toml ./crates/fastrmail-pop3/
-COPY crates/fastrmail-imap/Cargo.toml ./crates/fastrmail-imap/
-COPY crates/fastrmail-jmap/Cargo.toml ./crates/fastrmail-jmap/
-COPY crates/fastrmail-binary/Cargo.toml ./crates/fastrmail-binary/
 
-# Copy full source tree
-COPY crates/ ./crates/
+# Copy full crate workspace
+COPY crates ./crates
 
 # Copy built frontend assets so Axum can serve them
 COPY --from=frontend-builder /build/web/webmail/dist ./web/webmail/dist
@@ -50,7 +43,7 @@ RUN cargo build --release -p fastrmail-binary
 # Stage 3: Minimal Production Runtime
 # ==============================================================================
 FROM alpine:3.20 AS runtime
-RUN apk add --no-cache ca-certificates tzdata sqlite-libs libgcc wget
+RUN apk add --no-cache ca-certificates tzdata sqlite-libs libgcc libstdc++ wget
 
 WORKDIR /app
 
