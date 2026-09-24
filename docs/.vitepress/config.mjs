@@ -15,6 +15,7 @@ export default defineConfig({
       { text: 'Architecture', link: '/guide/architecture' },
       { text: 'SpamGuard', link: '/guide/spam-guard' },
       { text: 'JMAP & IMAP', link: '/guide/jmap' },
+      { text: 'Roadmap', link: '/guide/roadmap' },
       { text: 'API Reference', link: '/guide/api-reference' },
       { text: 'GitHub', link: 'https://github.com/atifjubaer/fastrmail' },
     ],
@@ -25,6 +26,7 @@ export default defineConfig({
           { text: 'Overview & Features', link: '/guide/getting-started' },
           { text: 'Docker & Dokploy Deployment', link: '/guide/docker' },
           { text: 'DNS Setup (SPF, DKIM, DMARC)', link: '/guide/dns' },
+          { text: 'Enterprise Roadmap (vs Stalwart)', link: '/guide/roadmap' },
         ],
       },
       {
