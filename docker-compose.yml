@@ -9,15 +9,21 @@ services:
     ports:
       # SMTP Inbound (RFC 5321)
       - "${SMTP_PORT:-25}:2525"
-      # IMAP4rev2 (RFC 9051)
+      # SMTP Submission Authenticated (RFC 6409 Port 587)
+      - "${SMTP_SUBMISSION_PORT:-587}:2526"
+      # IMAP4rev2 (RFC 9051 Port 143)
       - "${IMAP_PORT:-143}:1143"
+      # POP3 (RFC 1939 Port 110)
+      - "${POP3_PORT:-110}:1110"
       # HTTP — Webmail, Admin Dashboard, REST API & JMAP
       - "${HTTP_PORT:-8080}:8080"
     environment:
       - RUST_LOG=${RUST_LOG:-info}
       - FASTRMAIL_DATA_DIR=/app/data
       - FASTRMAIL_BIND_SMTP=0.0.0.0:2525
+      - FASTRMAIL_BIND_SUBMISSION=0.0.0.0:2526
       - FASTRMAIL_BIND_IMAP=0.0.0.0:1143
+      - FASTRMAIL_BIND_POP3=0.0.0.0:1110
       - FASTRMAIL_BIND_HTTP=0.0.0.0:8080
       - FASTRMAIL_HOSTNAME=${FASTRMAIL_HOSTNAME:-mail.example.com}
       - FASTRMAIL_ADMIN_USER=${FASTRMAIL_ADMIN_USER:-admin}
@@ -36,14 +42,22 @@ services:
       - "traefik.http.routers.fastrmail-http.entrypoints=websecure"
       - "traefik.http.routers.fastrmail-http.tls.certresolver=letsencrypt"
       - "traefik.http.services.fastrmail-http.loadbalancer.server.port=8080"
-      # TCP Router — SMTP Inbound
+      # TCP Router — SMTP Inbound (25)
       - "traefik.tcp.routers.fastrmail-smtp.rule=HostSNI(`*`)"
       - "traefik.tcp.routers.fastrmail-smtp.entrypoints=smtp"
       - "traefik.tcp.services.fastrmail-smtp.loadbalancer.server.port=2525"
-      # TCP Router — IMAP
+      # TCP Router — SMTP Submission (587)
+      - "traefik.tcp.routers.fastrmail-submission.rule=HostSNI(`*`)"
+      - "traefik.tcp.routers.fastrmail-submission.entrypoints=submission"
+      - "traefik.tcp.services.fastrmail-submission.loadbalancer.server.port=2526"
+      # TCP Router — IMAP (143)
       - "traefik.tcp.routers.fastrmail-imap.rule=HostSNI(`*`)"
       - "traefik.tcp.routers.fastrmail-imap.entrypoints=imap"
       - "traefik.tcp.services.fastrmail-imap.loadbalancer.server.port=1143"
+      # TCP Router — POP3 (110)
+      - "traefik.tcp.routers.fastrmail-pop3.rule=HostSNI(`*`)"
+      - "traefik.tcp.routers.fastrmail-pop3.entrypoints=pop3"
+      - "traefik.tcp.services.fastrmail-pop3.loadbalancer.server.port=1110"
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/api/health || exit 1"]
       interval: 30s

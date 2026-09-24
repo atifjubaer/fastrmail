@@ -18,6 +18,7 @@ use fastrmail_auth::DkimSigner;
 use fastrmail_core::{Account, QueueItem, SystemStats, Tenant};
 use fastrmail_imap::ImapServer;
 use fastrmail_jmap::{build_jmap_router, JmapState};
+use fastrmail_pop3::Pop3Server;
 use fastrmail_search::SearchEngine;
 use fastrmail_smtp::{OutboundEngine, SmtpServer};
 use fastrmail_store::Database;
@@ -945,7 +946,19 @@ async fn main() -> anyhow::Result<()> {
     });
     info!("SMTP listening on :2525");
 
-    // 2. Spawn Inbound IMAP4rev2 Server on :1143
+    // 2. Spawn SMTP Submission Server on :2526 (Port 587)
+    let sub_db = Arc::clone(&db);
+    let sub_server = SmtpServer::new_submission(sub_db, "data".to_string())
+        .with_search_engine(Arc::clone(&search_engine));
+    let sub_bind = std::env::var("FASTRMAIL_BIND_SUBMISSION").unwrap_or_else(|_| "0.0.0.0:2526".to_string());
+    tokio::spawn(async move {
+        if let Err(e) = sub_server.start(&sub_bind).await {
+            tracing::error!("SMTP submission error on {sub_bind}: {e}");
+        }
+    });
+    info!("SMTP Submission listening on :2526 (Port 587)");
+
+    // 3. Spawn Inbound IMAP4rev2 Server on :1143
     let imap_db = Arc::clone(&db);
     let imap_server = ImapServer::new(imap_db, "data".to_string());
     tokio::spawn(async move {
@@ -955,14 +968,25 @@ async fn main() -> anyhow::Result<()> {
     });
     info!("IMAP listening on :1143");
 
-    // 3. Spawn Outbound SMTP Delivery Worker
+    // 4. Spawn POP3 Server on :1110 (Port 110)
+    let pop3_db = Arc::clone(&db);
+    let pop3_server = Pop3Server::new(pop3_db, "data".to_string());
+    let pop3_bind = std::env::var("FASTRMAIL_BIND_POP3").unwrap_or_else(|_| "0.0.0.0:1110".to_string());
+    tokio::spawn(async move {
+        if let Err(e) = pop3_server.start(&pop3_bind).await {
+            tracing::error!("POP3 server error on {pop3_bind}: {e}");
+        }
+    });
+    info!("POP3 listening on :1110 (Port 110)");
+
+    // 5. Spawn Outbound SMTP Delivery Worker
     let outbound_db = Arc::clone(&db);
     let outbound_engine = Arc::new(OutboundEngine::new(outbound_db, "data".to_string()));
     let (_shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
     outbound_engine.start(shutdown_rx);
     info!("Outbound SMTP delivery worker running");
 
-    // 4. Start Axum HTTP API Server on :8080 (including JMAP RFC 8620/8621)
+    // 6. Start Axum HTTP API Server on :8080 (including JMAP RFC 8620/8621)
     let state = Arc::new(AppState {
         db,
         data_dir: "data".to_string(),
@@ -973,8 +997,10 @@ async fn main() -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind("0.0.0.0:8080").await?;
     info!("HTTP API listening on :8080");
 
-    println!("  SMTP listening on :2525");
-    println!("  IMAP listening on :1143");
+    println!("  SMTP listening on :2525 (Inbound)");
+    println!("  SMTP Submission on :2526 (Port 587 Auth)");
+    println!("  IMAP listening on :1143 (RFC 9051)");
+    println!("  POP3 listening on :1110 (RFC 1939)");
     println!("  HTTP API listening on :8080");
     println!("  JMAP API listening on :8080/jmap");
     println!();

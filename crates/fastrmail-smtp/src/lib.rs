@@ -505,13 +505,6 @@ async fn handle_connection(
             let mut final_message = auth_header;
             final_message.push_str(&data);
 
-            // Save the message blob to disk
-            let blob_id = Uuid::new_v4().to_string();
-            let blob_dir = format!("{data_dir}/blobs");
-            std::fs::create_dir_all(&blob_dir)?;
-            let blob_path = format!("{blob_dir}/{blob_id}.eml");
-            std::fs::write(&blob_path, final_message.as_bytes())?;
-
             let subject = parse_header(&data, "Subject");
             let from = parse_header(&data, "From")
                 .or_else(|| session.sender.clone());
@@ -547,17 +540,83 @@ async fn handle_connection(
                 }
             };
 
-            // Ensure INBOX exists
+            let plain_body = MessageParser::default()
+                .parse(final_message.as_bytes())
+                .and_then(|p| p.body_text(0).map(|s| s.to_string()))
+                .unwrap_or_else(|| data.clone());
+
+            // Evaluate Sieve rules
+            let sieve_rules = db.get_active_sieve_rules(&account_id).unwrap_or_default();
+            let mut target_mailbox_name = "INBOX".to_string();
+            let mut initial_flags = Vec::new();
+            let mut discard_message = false;
+            let mut reject_reason = None;
+
+            let subj_str = subject.as_deref().unwrap_or("");
+            let from_str = from.as_deref().unwrap_or("");
+            let to_str = to.as_deref().unwrap_or("");
+
+            for rule in sieve_rules {
+                if rule.matches(subj_str, from_str, to_str, &plain_body) {
+                    info!("Sieve rule '{}' matched for account {account_id}", rule.name);
+                    match rule.action {
+                        fastrmail_core::SieveAction::Discard => {
+                            discard_message = true;
+                            break;
+                        }
+                        fastrmail_core::SieveAction::Reject { reason } => {
+                            reject_reason = reason.or_else(|| Some("Message rejected by Sieve rule".to_string()));
+                            break;
+                        }
+                        fastrmail_core::SieveAction::FileInto { mailbox } => {
+                            target_mailbox_name = mailbox;
+                        }
+                        fastrmail_core::SieveAction::MarkRead => {
+                            initial_flags.push(r#""\\Seen""#.to_string());
+                        }
+                        fastrmail_core::SieveAction::AddFlag { flag } => {
+                            initial_flags.push(format!("\"{flag}\""));
+                        }
+                    }
+                }
+            }
+
+            if let Some(reason) = reject_reason {
+                warn!("Sieve rejected email for {recipient_email}: {reason}");
+                writer
+                    .write_all(format!("550 5.7.1 {reason}\r\n").as_bytes())
+                    .await?;
+                session.reset();
+                continue;
+            }
+
+            if discard_message {
+                info!("Sieve discarded email for {recipient_email}");
+                writer
+                    .write_all(b"250 OK message discarded by filter\r\n")
+                    .await?;
+                session.reset();
+                continue;
+            }
+
+            // Save the message blob to disk
+            let blob_id = Uuid::new_v4().to_string();
+            let blob_dir = format!("{data_dir}/blobs");
+            std::fs::create_dir_all(&blob_dir)?;
+            let blob_path = format!("{blob_dir}/{blob_id}.eml");
+            std::fs::write(&blob_path, final_message.as_bytes())?;
+
+            // Ensure target mailbox exists
             let mailboxes = db.get_mailboxes(&account_id)?;
-            let inbox_id = if let Some(inbox) = mailboxes.iter().find(|m| m.name == "INBOX") {
-                inbox.id.clone()
+            let target_mailbox_id = if let Some(mb) = mailboxes.iter().find(|m| m.name.eq_ignore_ascii_case(&target_mailbox_name)) {
+                mb.id.clone()
             } else {
-                db.insert_mailbox(&account_id, "INBOX")?
+                db.insert_mailbox(&account_id, &target_mailbox_name)?
             };
 
             // Insert the message into the database
             let msg_id = db.insert_message(
-                &inbox_id,
+                &target_mailbox_id,
                 &account_id,
                 &blob_id,
                 size_bytes,
@@ -566,21 +625,28 @@ async fn handle_connection(
                 to.as_deref(),
             )?;
 
+            let flags_str = if !initial_flags.is_empty() {
+                let flags_json = format!("[{}]", initial_flags.join(","));
+                let (uid, _) = match db.get_mailbox_by_id(&target_mailbox_id) {
+                    Ok(Some(mb)) => (mb.uid_next - 1, mb.modseq),
+                    _ => (1, 1),
+                };
+                let _ = db.update_message_flags(&target_mailbox_id, uid, &flags_json);
+                flags_json
+            } else {
+                "[]".to_string()
+            };
+
             // Index in Tantivy search engine if configured
             if let Some(ref engine) = search_engine {
-                let plain_body = MessageParser::default()
-                    .parse(final_message.as_bytes())
-                    .and_then(|p| p.body_text(0).map(|s| s.to_string()))
-                    .unwrap_or_else(|| data.clone());
-
-                let (uid, modseq) = match db.get_mailbox_by_id(&inbox_id) {
+                let (uid, modseq) = match db.get_mailbox_by_id(&target_mailbox_id) {
                     Ok(Some(mb)) => (mb.uid_next - 1, mb.modseq),
                     _ => (1, 1),
                 };
 
                 let msg_to_index = Message {
                     id: msg_id.clone(),
-                    mailbox_id: inbox_id.clone(),
+                    mailbox_id: target_mailbox_id.clone(),
                     account_id: account_id.clone(),
                     uid,
                     modseq,
@@ -590,7 +656,7 @@ async fn handle_connection(
                     parsed_from: from.clone(),
                     parsed_to: to.clone(),
                     internal_date: chrono::Utc::now(),
-                    flags: "[]".to_string(),
+                    flags: flags_str,
                 };
 
                 if let Err(e) = engine.index_message(&msg_to_index, &plain_body) {
@@ -1137,6 +1203,134 @@ mod tests {
         assert!(data_ok.starts_with("250"), "Expected 250 OK for DATA, got: {data_ok}");
 
         write_half.write_all(b"QUIT\r\n").await.unwrap();
+        std::fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[tokio::test]
+    async fn test_smtp_inbound_sieve_rules_integration() {
+        let db = Database::new_memory().expect("Failed to create in-memory DB");
+        db.init_schema().expect("Failed to init schema");
+        let tenant_id = db.insert_tenant("sieve-smtp.test").unwrap();
+        let user_id = db.insert_account(&tenant_id, "sieveuser", "sieveuser@sieve-smtp.test", "pass").unwrap();
+
+        // Rule 1: Discard if subject contains "lottery"
+        let discard_rule = fastrmail_core::SieveRule {
+            id: "r-discard".to_string(),
+            name: "Lottery Discard".to_string(),
+            field: fastrmail_core::SieveField::Subject,
+            operator: fastrmail_core::SieveOperator::Contains,
+            value: "lottery".to_string(),
+            action: fastrmail_core::SieveAction::Discard,
+            is_active: true,
+        };
+        db.insert_sieve_script(&user_id, "Discard Lottery", &serde_json::to_string(&discard_rule).unwrap(), true).unwrap();
+
+        // Rule 2: Reject if subject contains "malware"
+        let reject_rule = fastrmail_core::SieveRule {
+            id: "r-reject".to_string(),
+            name: "Malware Reject".to_string(),
+            field: fastrmail_core::SieveField::Subject,
+            operator: fastrmail_core::SieveOperator::Contains,
+            value: "malware".to_string(),
+            action: fastrmail_core::SieveAction::Reject { reason: Some("Rejected dangerous malware".to_string()) },
+            is_active: true,
+        };
+        db.insert_sieve_script(&user_id, "Reject Malware", &serde_json::to_string(&reject_rule).unwrap(), true).unwrap();
+
+        // Rule 3: File into "Archive" if subject contains "receipt"
+        let file_rule = fastrmail_core::SieveRule {
+            id: "r-file".to_string(),
+            name: "Archive Receipt".to_string(),
+            field: fastrmail_core::SieveField::Subject,
+            operator: fastrmail_core::SieveOperator::Contains,
+            value: "receipt".to_string(),
+            action: fastrmail_core::SieveAction::FileInto { mailbox: "Archive".to_string() },
+            is_active: true,
+        };
+        db.insert_sieve_script(&user_id, "File Receipt", &serde_json::to_string(&file_rule).unwrap(), true).unwrap();
+
+        let db = Arc::new(db);
+        let temp_dir = std::env::temp_dir().join(format!("fastrmail_sieve_{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let data_dir = temp_dir.to_string_lossy().to_string();
+
+        let server = SmtpServer::new(Arc::clone(&db), data_dir.clone())
+            .with_bypass_spam_check(true);
+        let addr = server.start_with_addr("127.0.0.1:0").await.unwrap();
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // Session 1: Discard rule
+        {
+            let stream = TcpStream::connect(addr).await.unwrap();
+            let (read_half, mut write_half) = stream.into_split();
+            let mut reader = BufReader::new(read_half);
+            let _ = read_response(&mut reader).await;
+
+            write_half.write_all(b"EHLO localhost\r\n").await.unwrap();
+            let _ = read_multiline_response(&mut reader).await;
+            write_half.write_all(b"MAIL FROM:<sender@localhost>\r\n").await.unwrap();
+            let _ = read_response(&mut reader).await;
+            write_half.write_all(b"RCPT TO:<sieveuser@sieve-smtp.test>\r\n").await.unwrap();
+            let _ = read_response(&mut reader).await;
+            write_half.write_all(b"DATA\r\n").await.unwrap();
+            let _ = read_response(&mut reader).await;
+            write_half.write_all(b"Subject: You won the lottery!\r\nFrom: sender@localhost\r\nTo: sieveuser@sieve-smtp.test\r\n\r\nMoney awaits.\r\n.\r\n").await.unwrap();
+            let data_resp = read_response(&mut reader).await;
+            assert!(data_resp.starts_with("250"), "Expected 250 discard acknowledgment, got: {data_resp}");
+
+            // Verify message was discarded (not in INBOX)
+            let msgs = db.get_messages(&user_id).unwrap();
+            assert!(msgs.is_empty(), "Discarded message must not be stored");
+        }
+
+        // Session 2: Reject rule
+        {
+            let stream = TcpStream::connect(addr).await.unwrap();
+            let (read_half, mut write_half) = stream.into_split();
+            let mut reader = BufReader::new(read_half);
+            let _ = read_response(&mut reader).await;
+
+            write_half.write_all(b"EHLO localhost\r\n").await.unwrap();
+            let _ = read_multiline_response(&mut reader).await;
+            write_half.write_all(b"MAIL FROM:<bad@localhost>\r\n").await.unwrap();
+            let _ = read_response(&mut reader).await;
+            write_half.write_all(b"RCPT TO:<sieveuser@sieve-smtp.test>\r\n").await.unwrap();
+            let _ = read_response(&mut reader).await;
+            write_half.write_all(b"DATA\r\n").await.unwrap();
+            let _ = read_response(&mut reader).await;
+            write_half.write_all(b"Subject: Download this malware\r\nFrom: bad@localhost\r\nTo: sieveuser@sieve-smtp.test\r\n\r\nPayload.\r\n.\r\n").await.unwrap();
+            let data_resp = read_response(&mut reader).await;
+            assert!(data_resp.starts_with("550"), "Expected 550 Sieve reject, got: {data_resp}");
+            assert!(data_resp.contains("Rejected dangerous malware"));
+        }
+
+        // Session 3: FileInto rule
+        {
+            let stream = TcpStream::connect(addr).await.unwrap();
+            let (read_half, mut write_half) = stream.into_split();
+            let mut reader = BufReader::new(read_half);
+            let _ = read_response(&mut reader).await;
+
+            write_half.write_all(b"EHLO localhost\r\n").await.unwrap();
+            let _ = read_multiline_response(&mut reader).await;
+            write_half.write_all(b"MAIL FROM:<store@localhost>\r\n").await.unwrap();
+            let _ = read_response(&mut reader).await;
+            write_half.write_all(b"RCPT TO:<sieveuser@sieve-smtp.test>\r\n").await.unwrap();
+            let _ = read_response(&mut reader).await;
+            write_half.write_all(b"DATA\r\n").await.unwrap();
+            let _ = read_response(&mut reader).await;
+            write_half.write_all(b"Subject: Store Receipt #1024\r\nFrom: store@localhost\r\nTo: sieveuser@sieve-smtp.test\r\n\r\nThank you for purchase.\r\n.\r\n").await.unwrap();
+            let data_resp = read_response(&mut reader).await;
+            assert!(data_resp.starts_with("250"), "Expected 250 accepted, got: {data_resp}");
+
+            // Verify stored in Archive folder
+            let archive_mb = db.get_mailbox_by_name(&user_id, "Archive").unwrap().expect("Archive mailbox should be created");
+            let msgs = db.get_messages_by_mailbox(&archive_mb.id).unwrap();
+            assert_eq!(msgs.len(), 1);
+            assert_eq!(msgs[0].parsed_subject.as_deref(), Some("Store Receipt #1024"));
+        }
+
         std::fs::remove_dir_all(&temp_dir).ok();
     }
 }

@@ -3,9 +3,6 @@
 # ==============================================================================
 # This template defines a one-click deployable service for Dokploy.
 # Import this file in Dokploy > Applications > Docker Compose to auto-provision.
-#
-# Dokploy will auto-detect Traefik labels, set up routing, and provision
-# Let's Encrypt TLS certificates for the specified FASTRMAIL_HOSTNAME.
 # ==============================================================================
 
 version: "3.8"
@@ -21,16 +18,20 @@ services:
 
     # ── Port Exposure ────────────────────────────────────────────────────────
     ports:
-      - "${SMTP_PORT:-25}:2525"       # SMTP Inbound (RFC 5321)
-      - "${IMAP_PORT:-143}:1143"      # IMAP4rev2 (RFC 9051)
-      - "${HTTP_PORT:-8080}:8080"     # HTTP — Webmail, Admin, REST API, JMAP
+      - "${SMTP_PORT:-25}:2525"                 # SMTP Inbound (RFC 5321)
+      - "${SMTP_SUBMISSION_PORT:-587}:2526"     # SMTP Submission Auth (RFC 6409)
+      - "${IMAP_PORT:-143}:1143"                # IMAP4rev2 (RFC 9051)
+      - "${POP3_PORT:-110}:1110"                # POP3 (RFC 1939)
+      - "${HTTP_PORT:-8080}:8080"               # HTTP — Webmail, Admin, REST API, JMAP
 
     # ── Environment Variables (Dokploy auto-fills from UI) ───────────────────
     environment:
       RUST_LOG: "${RUST_LOG:-info}"
       FASTRMAIL_DATA_DIR: "/app/data"
       FASTRMAIL_BIND_SMTP: "0.0.0.0:2525"
+      FASTRMAIL_BIND_SUBMISSION: "0.0.0.0:2526"
       FASTRMAIL_BIND_IMAP: "0.0.0.0:1143"
+      FASTRMAIL_BIND_POP3: "0.0.0.0:1110"
       FASTRMAIL_BIND_HTTP: "0.0.0.0:8080"
       FASTRMAIL_HOSTNAME: "${FASTRMAIL_HOSTNAME:-mail.example.com}"
       FASTRMAIL_PRIMARY_DOMAIN: "${FASTRMAIL_PRIMARY_DOMAIN:-example.com}"
@@ -47,10 +48,9 @@ services:
 
     # ── Traefik Labels (Dokploy auto-discovery) ──────────────────────────────
     labels:
-      # Enable Traefik routing
       traefik.enable: "true"
 
-      # HTTP Router — Webmail & Admin UI (HTTPS via Let's Encrypt)
+      # HTTP Router — Webmail & Admin UI
       traefik.http.routers.fastrmail-web.rule: "Host(`${FASTRMAIL_HOSTNAME:-mail.example.com}`)"
       traefik.http.routers.fastrmail-web.entrypoints: "websecure"
       traefik.http.routers.fastrmail-web.tls: "true"
@@ -62,10 +62,20 @@ services:
       traefik.tcp.routers.fastrmail-smtp.entrypoints: "smtp"
       traefik.tcp.services.fastrmail-smtp.loadbalancer.server.port: "2525"
 
+      # TCP Router — SMTP Submission (Port 587)
+      traefik.tcp.routers.fastrmail-sub.rule: "HostSNI(`*`)"
+      traefik.tcp.routers.fastrmail-sub.entrypoints: "submission"
+      traefik.tcp.services.fastrmail-sub.loadbalancer.server.port: "2526"
+
       # TCP Router — IMAP (Port 143)
       traefik.tcp.routers.fastrmail-imap.rule: "HostSNI(`*`)"
       traefik.tcp.routers.fastrmail-imap.entrypoints: "imap"
       traefik.tcp.services.fastrmail-imap.loadbalancer.server.port: "1143"
+
+      # TCP Router — POP3 (Port 110)
+      traefik.tcp.routers.fastrmail-pop3.rule: "HostSNI(`*`)"
+      traefik.tcp.routers.fastrmail-pop3.entrypoints: "pop3"
+      traefik.tcp.services.fastrmail-pop3.loadbalancer.server.port: "1110"
 
       # Dokploy Metadata
       dokploy.service.name: "fastrmail"
@@ -80,12 +90,10 @@ services:
       retries: 3
       start_period: 15s
 
-# ── Volumes ────────────────────────────────────────────────────────────────────
 volumes:
   fastrmail_data:
     driver: local
 
-# ── Networks ───────────────────────────────────────────────────────────────────
 networks:
   dokploy-network:
     external: true
