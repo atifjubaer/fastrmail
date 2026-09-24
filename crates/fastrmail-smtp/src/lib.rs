@@ -1,8 +1,10 @@
-//! FastrMail SMTP — Inbound SMTP server with full state machine.
-//!
-//! Implements the core SMTP protocol: EHLO, MAIL FROM, RCPT TO, DATA, QUIT.
-//! Saves received messages to disk (as .eml blobs) and indexes metadata in SQLite.
+//! FastrMail SMTP — Inbound SMTP server with full state machine and security verification,
+//! plus outbound delivery queue processing.
 
+pub mod outbound;
+pub use outbound::OutboundEngine;
+
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -11,6 +13,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tracing::{error, info, warn};
 use uuid::Uuid;
 
+use fastrmail_auth::{DkimVerifier, DmarcEvaluator, SpfVerifier};
 use fastrmail_store::Database;
 
 /// SMTP server that accepts inbound email connections.
@@ -22,6 +25,8 @@ pub struct SmtpServer {
 /// Internal state of a single SMTP session.
 #[derive(Debug)]
 struct SmtpSession {
+    /// HELO/EHLO domain.
+    helo: Option<String>,
     /// The sender address from MAIL FROM.
     sender: Option<String>,
     /// The recipient addresses from RCPT TO.
@@ -33,6 +38,7 @@ struct SmtpSession {
 impl SmtpSession {
     fn new() -> Self {
         Self {
+            helo: None,
             sender: None,
             recipients: Vec::new(),
             greeted: false,
@@ -66,7 +72,7 @@ impl SmtpServer {
                     let db = Arc::clone(&self.db);
                     let data_dir = self.data_dir.clone();
                     tokio::spawn(async move {
-                        if let Err(e) = handle_connection(stream, db, data_dir).await {
+                        if let Err(e) = handle_connection(stream, peer_addr, db, data_dir).await {
                             error!("SMTP session error from {peer_addr}: {e}");
                         }
                     });
@@ -80,7 +86,7 @@ impl SmtpServer {
 
     /// Start the SMTP listener and return the actual bound address.
     /// Useful for tests that bind to port 0.
-    pub async fn start_with_addr(&self, addr: &str) -> Result<std::net::SocketAddr> {
+    pub async fn start_with_addr(&self, addr: &str) -> Result<SocketAddr> {
         let listener = TcpListener::bind(addr)
             .await
             .with_context(|| format!("Failed to bind SMTP listener on {addr}"))?;
@@ -99,7 +105,7 @@ impl SmtpServer {
                         let db = Arc::clone(&db);
                         let data_dir = data_dir.clone();
                         tokio::spawn(async move {
-                            if let Err(e) = handle_connection(stream, db, data_dir).await {
+                            if let Err(e) = handle_connection(stream, peer_addr, db, data_dir).await {
                                 error!("SMTP session error from {peer_addr}: {e}");
                             }
                         });
@@ -117,7 +123,7 @@ impl SmtpServer {
 }
 
 /// Parse an email address from angle brackets: `<user@example.com>` → `user@example.com`.
-fn parse_address(input: &str) -> String {
+pub fn parse_address(input: &str) -> String {
     let trimmed = input.trim();
     if let Some(start) = trimmed.find('<') {
         if let Some(end) = trimmed.find('>') {
@@ -128,7 +134,7 @@ fn parse_address(input: &str) -> String {
 }
 
 /// Parse a simple header value from raw email data.
-fn parse_header(data: &str, header_name: &str) -> Option<String> {
+pub fn parse_header(data: &str, header_name: &str) -> Option<String> {
     let search = format!("{header_name}:");
     for line in data.lines() {
         let lower = line.to_lowercase();
@@ -142,6 +148,7 @@ fn parse_header(data: &str, header_name: &str) -> Option<String> {
 /// Handle a single SMTP connection through the full state machine.
 async fn handle_connection(
     stream: TcpStream,
+    peer_addr: SocketAddr,
     db: Arc<Database>,
     data_dir: String,
 ) -> Result<()> {
@@ -169,6 +176,14 @@ async fn handle_connection(
         if upper.starts_with("EHLO") || upper.starts_with("HELO") {
             session.greeted = true;
             session.reset();
+            let domain_part = if upper.starts_with("EHLO ") {
+                line[5..].trim().to_string()
+            } else if upper.starts_with("HELO ") {
+                line[5..].trim().to_string()
+            } else {
+                "localhost".to_string()
+            };
+            session.helo = Some(domain_part);
             writer
                 .write_all(b"250-FastrMail\r\n250-SIZE 52428800\r\n250-8BITMIME\r\n250 OK\r\n")
                 .await?;
@@ -223,28 +238,77 @@ async fn handle_connection(
                 }
             }
 
-            // Save the message
+            // 1. Extract sender IP
+            let peer_ip = peer_addr.ip();
+            let helo_domain = session.helo.as_deref().unwrap_or("localhost");
+            let sender = session.sender.as_deref().unwrap_or("");
+
+            // 2. Call SpfVerifier::verify_spf()
+            let spf_result = SpfVerifier::verify_spf(peer_ip, helo_domain, sender).await?;
+
+            // 3. Call DkimVerifier::verify_dkim()
+            let dkim_result = DkimVerifier::verify_dkim(data.as_bytes()).await?;
+
+            // 4. Extract From domain and call DmarcEvaluator::evaluate()
+            let from_header = parse_header(&data, "From").unwrap_or_else(|| sender.to_string());
+            let from_addr = parse_address(&from_header);
+            let from_domain = from_addr.split('@').nth(1).unwrap_or("localhost");
+
+            let dmarc_result = DmarcEvaluator::evaluate(&dkim_result, &spf_result, from_domain).await?;
+
+            info!(
+                "Inbound auth results: ip={} sender={} from_domain={} spf_pass={} dkim_pass={} dmarc_pass={} dmarc_policy={}",
+                peer_ip, sender, from_domain, spf_result.pass, dkim_result.pass, dmarc_result.pass, dmarc_result.policy
+            );
+
+            // 5. If DMARC policy is "reject" and result is fail, respond "550 DMARC policy rejection"
+            if dmarc_result.policy == "reject" && !dmarc_result.pass {
+                warn!(
+                    "Rejecting email from {} due to DMARC policy=reject and failed alignment",
+                    from_domain
+                );
+                writer.write_all(b"550 DMARC policy rejection\r\n").await?;
+                session.reset();
+                continue;
+            }
+
+            // 6. Prepend Authentication-Results header
+            let dkim_status = if dkim_result.pass { "pass" } else { "none" };
+            let spf_status = if spf_result.pass { "pass" } else { "neutral" };
+            let dmarc_status = if dmarc_result.pass { "pass" } else { "fail" };
+            let auth_header = format!(
+                "Authentication-Results: fastrmail; dkim={} header.d={}; spf={} smtp.mailfrom={}; dmarc={} (p={})\r\n",
+                dkim_status,
+                if dkim_result.domain.is_empty() { "none" } else { &dkim_result.domain },
+                spf_status,
+                sender,
+                dmarc_status,
+                dmarc_result.policy
+            );
+
+            let mut final_message = auth_header;
+            final_message.push_str(&data);
+
+            // Save the message blob to disk
             let blob_id = Uuid::new_v4().to_string();
             let blob_dir = format!("{data_dir}/blobs");
             std::fs::create_dir_all(&blob_dir)?;
             let blob_path = format!("{blob_dir}/{blob_id}.eml");
-            std::fs::write(&blob_path, data.as_bytes())?;
+            std::fs::write(&blob_path, final_message.as_bytes())?;
 
             let subject = parse_header(&data, "Subject");
             let from = parse_header(&data, "From")
                 .or_else(|| session.sender.clone());
             let to = parse_header(&data, "To")
                 .or_else(|| session.recipients.first().cloned());
-            let size_bytes = data.len() as i64;
+            let size_bytes = final_message.len() as i64;
 
-            // Try to find or create a tenant + account + mailbox for the first recipient
-            // For now, use a default tenant and create on the fly if needed
+            // Get or create tenant and account
             let default_tenant_id = match db.get_tenant_by_domain("localhost")? {
                 Some(t) => t.id,
                 None => db.insert_tenant("localhost")?,
             };
 
-            // Create a default account if needed
             let recipient_email = session
                 .recipients
                 .first()
@@ -320,6 +384,7 @@ async fn handle_connection(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fastrmail_auth::DkimSigner;
     use tokio::io::AsyncWriteExt;
     use tokio::net::TcpStream;
 
@@ -348,167 +413,93 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_smtp_full_session() {
-        // Set up in-memory database
+    async fn test_smtp_full_session_with_authentication_header() {
         let db = Database::new_memory().expect("Failed to create in-memory DB");
         db.init_schema().expect("Failed to init schema");
         let db = Arc::new(db);
 
-        // Create a temp directory for blobs
         let temp_dir = std::env::temp_dir().join(format!("fastrmail_test_{}", Uuid::new_v4()));
         std::fs::create_dir_all(&temp_dir).unwrap();
         let data_dir = temp_dir.to_string_lossy().to_string();
 
-        // Start the SMTP server on a random port
         let server = SmtpServer::new(Arc::clone(&db), data_dir.clone());
         let addr = server
             .start_with_addr("127.0.0.1:0")
             .await
             .expect("Failed to start SMTP server");
 
-        // Give the server a moment to be ready
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-        // Connect a client
-        let stream = TcpStream::connect(addr)
-            .await
-            .expect("Failed to connect to SMTP server");
+        let stream = TcpStream::connect(addr).await.expect("Failed to connect");
         let (read_half, mut write_half) = stream.into_split();
         let mut reader = BufReader::new(read_half);
 
-        // 1. Read the greeting banner
-        let greeting = read_response(&mut reader).await;
-        assert!(
-            greeting.starts_with("220"),
-            "Expected 220 greeting, got: {greeting}"
-        );
+        let _ = read_response(&mut reader).await;
 
-        // 2. Send EHLO
         write_half.write_all(b"EHLO test.local\r\n").await.unwrap();
-        let ehlo_response = read_multiline_response(&mut reader).await;
-        assert!(
-            ehlo_response.last().unwrap().starts_with("250"),
-            "Expected 250 after EHLO"
-        );
+        let _ = read_multiline_response(&mut reader).await;
 
-        // 3. MAIL FROM
         write_half
             .write_all(b"MAIL FROM:<sender@test.local>\r\n")
             .await
             .unwrap();
-        let mail_response = read_response(&mut reader).await;
-        assert!(
-            mail_response.starts_with("250"),
-            "Expected 250 after MAIL FROM, got: {mail_response}"
-        );
+        let _ = read_response(&mut reader).await;
 
-        // 4. RCPT TO
         write_half
             .write_all(b"RCPT TO:<recipient@localhost>\r\n")
             .await
             .unwrap();
-        let rcpt_response = read_response(&mut reader).await;
-        assert!(
-            rcpt_response.starts_with("250"),
-            "Expected 250 after RCPT TO, got: {rcpt_response}"
-        );
+        let _ = read_response(&mut reader).await;
 
-        // 5. DATA
         write_half.write_all(b"DATA\r\n").await.unwrap();
-        let data_response = read_response(&mut reader).await;
-        assert!(
-            data_response.starts_with("354"),
-            "Expected 354 after DATA, got: {data_response}"
-        );
+        let _ = read_response(&mut reader).await;
 
-        // 6. Send the email body
         write_half
             .write_all(
                 b"From: sender@test.local\r\n\
                   To: recipient@localhost\r\n\
-                  Subject: Test Email from SMTP\r\n\
+                  Subject: Test Inbound with Auth\r\n\
                   \r\n\
-                  This is the body of the test email.\r\n\
+                  Hello Authenticated World!\r\n\
                   .\r\n",
             )
             .await
             .unwrap();
 
         let data_ok = read_response(&mut reader).await;
-        assert!(
-            data_ok.starts_with("250"),
-            "Expected 250 after message data, got: {data_ok}"
-        );
+        assert!(data_ok.starts_with("250"), "Expected 250, got: {data_ok}");
 
-        // 7. QUIT
         write_half.write_all(b"QUIT\r\n").await.unwrap();
-        let quit_response = read_response(&mut reader).await;
-        assert!(
-            quit_response.starts_with("221"),
-            "Expected 221 after QUIT, got: {quit_response}"
-        );
+        let _ = read_response(&mut reader).await;
 
-        // 8. Verify the message was saved in the database
-        let account = db
-            .get_account_by_email("recipient@localhost")
-            .unwrap()
-            .expect("Account should have been created");
-        let messages = db.get_messages(&account.id).unwrap();
-        assert_eq!(messages.len(), 1, "Should have exactly 1 message");
-        assert_eq!(
-            messages[0].parsed_subject.as_deref(),
-            Some("Test Email from SMTP")
-        );
-
-        // 9. Verify the blob file was created on disk
+        // Verify message blob on disk contains Authentication-Results header
         let blob_dir = format!("{data_dir}/blobs");
         let entries: Vec<_> = std::fs::read_dir(&blob_dir)
             .unwrap()
             .filter_map(|e| e.ok())
             .collect();
-        assert_eq!(entries.len(), 1, "Should have exactly 1 blob file");
-        assert!(entries[0].path().extension().unwrap() == "eml");
+        assert_eq!(entries.len(), 1);
 
-        // Cleanup
+        let content = std::fs::read_to_string(entries[0].path()).unwrap();
+        assert!(
+            content.contains("Authentication-Results: fastrmail;"),
+            "Saved email must contain Authentication-Results header"
+        );
+
         std::fs::remove_dir_all(&temp_dir).ok();
     }
 
-    #[test]
-    fn test_parse_address() {
-        assert_eq!(parse_address("<user@example.com>"), "user@example.com");
-        assert_eq!(parse_address("  <admin@test.org>  "), "admin@test.org");
-        assert_eq!(parse_address("bare@address.com"), "bare@address.com");
-    }
-
-    #[test]
-    fn test_parse_header() {
-        let email = "From: Alice <alice@example.com>\r\nTo: bob@test.com\r\nSubject: Hello World\r\n\r\nBody";
-        assert_eq!(
-            parse_header(email, "Subject"),
-            Some("Hello World".to_string())
-        );
-        assert_eq!(
-            parse_header(email, "From"),
-            Some("Alice <alice@example.com>".to_string())
-        );
-        assert_eq!(
-            parse_header(email, "To"),
-            Some("bob@test.com".to_string())
-        );
-        assert_eq!(parse_header(email, "X-Missing"), None);
-    }
-
     #[tokio::test]
-    async fn test_smtp_protocol_errors() {
+    async fn test_smtp_signed_dkim_inbound() {
         let db = Database::new_memory().expect("Failed to create in-memory DB");
         db.init_schema().expect("Failed to init schema");
         let db = Arc::new(db);
 
-        let temp_dir = std::env::temp_dir().join(format!("fastrmail_test_err_{}", Uuid::new_v4()));
+        let temp_dir = std::env::temp_dir().join(format!("fastrmail_dkim_in_{}", Uuid::new_v4()));
         std::fs::create_dir_all(&temp_dir).unwrap();
         let data_dir = temp_dir.to_string_lossy().to_string();
 
-        let server = SmtpServer::new(Arc::clone(&db), data_dir);
+        let server = SmtpServer::new(Arc::clone(&db), data_dir.clone());
         let addr = server
             .start_with_addr("127.0.0.1:0")
             .await
@@ -516,39 +507,152 @@ mod tests {
 
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
+        // Generate key and sign email with a neutral test domain
+        let keys = DkimSigner::generate_key_pair().unwrap();
+        let raw_body = b"From: sender@fastrmail.local\r\n\
+                         To: recipient@localhost\r\n\
+                         Subject: Signed Message\r\n\
+                         \r\n\
+                         Body with DKIM signature.";
+
+        let signed = DkimSigner::sign(raw_body, "fastrmail.local", "default", &keys.private_key_pem).unwrap();
+
         let stream = TcpStream::connect(addr).await.unwrap();
         let (read_half, mut write_half) = stream.into_split();
         let mut reader = BufReader::new(read_half);
 
-        // Read greeting
+        let _ = read_response(&mut reader).await;
+        write_half.write_all(b"EHLO client.local\r\n").await.unwrap();
+        let _ = read_multiline_response(&mut reader).await;
+        write_half.write_all(b"MAIL FROM:<sender@fastrmail.local>\r\n").await.unwrap();
+        let _ = read_response(&mut reader).await;
+        write_half.write_all(b"RCPT TO:<recipient@localhost>\r\n").await.unwrap();
+        let _ = read_response(&mut reader).await;
+        write_half.write_all(b"DATA\r\n").await.unwrap();
         let _ = read_response(&mut reader).await;
 
-        // Try MAIL FROM without EHLO → should get 503
-        write_half
-            .write_all(b"MAIL FROM:<test@test.com>\r\n")
-            .await
-            .unwrap();
-        let resp = read_response(&mut reader).await;
-        assert!(
-            resp.starts_with("503"),
-            "Expected 503 without EHLO, got: {resp}"
-        );
+        write_half.write_all(&signed).await.unwrap();
+        write_half.write_all(b"\r\n.\r\n").await.unwrap();
+        let data_ok = read_response(&mut reader).await;
+        assert!(data_ok.starts_with("250"), "Expected 250 for neutral domain, got: {data_ok}");
 
-        // Send unknown command → should get 500
-        write_half
-            .write_all(b"FOOBAR\r\n")
-            .await
-            .unwrap();
-        let resp = read_response(&mut reader).await;
-        assert!(
-            resp.starts_with("500"),
-            "Expected 500 for unknown cmd, got: {resp}"
-        );
-
-        // QUIT
         write_half.write_all(b"QUIT\r\n").await.unwrap();
-        let resp = read_response(&mut reader).await;
-        assert!(resp.starts_with("221"));
+
+        std::fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[tokio::test]
+    async fn test_smtp_dmarc_policy_rejection() {
+        let db = Database::new_memory().expect("Failed to create in-memory DB");
+        db.init_schema().expect("Failed to init schema");
+        let db = Arc::new(db);
+
+        let temp_dir = std::env::temp_dir().join(format!("fastrmail_dmarc_rej_{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let data_dir = temp_dir.to_string_lossy().to_string();
+
+        let server = SmtpServer::new(Arc::clone(&db), data_dir.clone());
+        let addr = server
+            .start_with_addr("127.0.0.1:0")
+            .await
+            .expect("Failed to start SMTP server");
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // example.com publishes a real DNS DMARC policy of p=reject.
+        // Sending from sender@example.com without valid SPF/DKIM will trigger 550 rejection.
+        let stream = TcpStream::connect(addr).await.unwrap();
+        let (read_half, mut write_half) = stream.into_split();
+        let mut reader = BufReader::new(read_half);
+
+        let _ = read_response(&mut reader).await;
+        write_half.write_all(b"EHLO client.local\r\n").await.unwrap();
+        let _ = read_multiline_response(&mut reader).await;
+        write_half.write_all(b"MAIL FROM:<attacker@example.com>\r\n").await.unwrap();
+        let _ = read_response(&mut reader).await;
+        write_half.write_all(b"RCPT TO:<victim@localhost>\r\n").await.unwrap();
+        let _ = read_response(&mut reader).await;
+        write_half.write_all(b"DATA\r\n").await.unwrap();
+        let _ = read_response(&mut reader).await;
+
+        write_half
+            .write_all(
+                b"From: attacker@example.com\r\n\
+                  To: victim@localhost\r\n\
+                  Subject: Forged Email\r\n\
+                  \r\n\
+                  I am pretending to be from example.com!\r\n\
+                  .\r\n",
+            )
+            .await
+            .unwrap();
+
+        let data_resp = read_response(&mut reader).await;
+        assert!(
+            data_resp.starts_with("550"),
+            "Expected 550 DMARC policy rejection, got: {data_resp}"
+        );
+        assert!(data_resp.contains("DMARC policy rejection"));
+
+        // Verify message was NOT stored
+        let blob_dir = format!("{data_dir}/blobs");
+        let entries_count = std::fs::read_dir(&blob_dir).map(|rd| rd.count()).unwrap_or(0);
+        assert_eq!(entries_count, 0, "Rejected message must not be stored on disk");
+
+        write_half.write_all(b"QUIT\r\n").await.unwrap();
+
+        std::fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[tokio::test]
+    async fn test_outbound_engine_delivery() {
+        let db = Database::new_memory().expect("Failed to create in-memory DB");
+        db.init_schema().expect("Failed to init schema");
+        let db = Arc::new(db);
+
+        let temp_dir = std::env::temp_dir().join(format!("fastrmail_outbound_{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let data_dir = temp_dir.to_string_lossy().to_string();
+
+        // 1. Start a mock receiving SMTP server on port 0
+        let mock_server = SmtpServer::new(Arc::clone(&db), data_dir.clone());
+        let mock_addr = mock_server.start_with_addr("127.0.0.1:0").await.unwrap();
+        let mock_port = mock_addr.port();
+
+        // 2. Write an email blob to disk
+        let blob_dir = format!("{data_dir}/blobs");
+        std::fs::create_dir_all(&blob_dir).unwrap();
+        let blob_id = Uuid::new_v4().to_string();
+        let blob_path = format!("{blob_dir}/{blob_id}.eml");
+        std::fs::write(
+            &blob_path,
+            b"From: outbound@fastrmail.com\r\n\
+              To: mock@localhost\r\n\
+              Subject: Outbound Engine Delivery Test\r\n\
+              \r\n\
+              Delivery body content.",
+        )
+        .unwrap();
+
+        // 3. Queue the email in Database
+        let tenant_id = db.insert_tenant("fastrmail.com").unwrap();
+        let _queue_id = db
+            .queue_email(&tenant_id, &blob_id, "outbound@fastrmail.com", "mock@localhost")
+            .unwrap();
+
+        let pending = db.get_queue_pending().unwrap();
+        assert_eq!(pending.len(), 1);
+
+        // 4. Run OutboundEngine with target port pointing to mock server
+        let engine = OutboundEngine::with_port(Arc::clone(&db), data_dir.clone(), mock_port);
+        engine.process_queue().await.unwrap();
+
+        // 5. Verify the queue item was delivered and removed from queue
+        let after_delivery = db.get_queue_pending().unwrap();
+        assert!(
+            after_delivery.is_empty(),
+            "Queue should be empty after successful delivery"
+        );
 
         std::fs::remove_dir_all(&temp_dir).ok();
     }

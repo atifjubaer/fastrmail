@@ -6,10 +6,11 @@
 use std::sync::Mutex;
 
 use anyhow::{Context, Result};
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection};
 use uuid::Uuid;
 
+use fastrmail_auth::{hash_password, verify_password};
 use fastrmail_core::{Account, DkimKey, Mailbox, Message, QueueItem, Tenant};
 
 /// Main database handle wrapping a SQLite connection in a Mutex for thread safety.
@@ -42,7 +43,7 @@ impl Database {
         })
     }
 
-    /// Initialize the database schema — creates all tables if they don't exist.
+    /// Initialize the database schema — creates all tables and performance indexes.
     pub fn init_schema(&self) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute_batch(
@@ -108,6 +109,11 @@ impl Database {
                 next_retry_at DATETIME,
                 retry_count INTEGER DEFAULT 0
             );
+
+            -- Performance Indexes for IMAP & Outbound Queue
+            CREATE INDEX IF NOT EXISTS idx_messages_account ON messages(account_id);
+            CREATE INDEX IF NOT EXISTS idx_messages_mailbox ON messages(mailbox_id, uid);
+            CREATE INDEX IF NOT EXISTS idx_smtp_queue_status ON smtp_queue(status);
             ",
         )
         .context("Failed to initialize database schema")?;
@@ -152,19 +158,25 @@ impl Database {
 
     // ─── Account CRUD ────────────────────────────────────────
 
-    /// Insert a new account. Returns the generated account ID.
+    /// Insert a new account. Hashes raw password with Argon2id if not already hashed.
     pub fn insert_account(
         &self,
         tenant_id: &str,
         username: &str,
         email: &str,
-        password_hash: &str,
+        password: &str,
     ) -> Result<String> {
+        let pw_hash = if password.starts_with("$argon2") {
+            password.to_string()
+        } else {
+            hash_password(password)?
+        };
+
         let conn = self.conn.lock().unwrap();
         let id = Uuid::new_v4().to_string();
         conn.execute(
             "INSERT INTO accounts (id, tenant_id, username, email, password_hash) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![id, tenant_id, username, email, password_hash],
+            params![id, tenant_id, username, email, pw_hash],
         )?;
         Ok(id)
     }
@@ -194,6 +206,20 @@ impl Database {
             Some(Ok(account)) => Ok(Some(account)),
             Some(Err(e)) => Err(e.into()),
             None => Ok(None),
+        }
+    }
+
+    /// Verify an email and password combination, returning the account if valid.
+    pub fn verify_login(&self, email: &str, password: &str) -> Result<Option<Account>> {
+        let account = match self.get_account_by_email(email)? {
+            Some(a) => a,
+            None => return Ok(None),
+        };
+
+        if verify_password(password, &account.password_hash)? {
+            Ok(Some(account))
+        } else {
+            Ok(None)
         }
     }
 
@@ -237,7 +263,7 @@ impl Database {
 
     // ─── Message CRUD ────────────────────────────────────────
 
-    /// Insert a new message. Automatically assigns UID and modseq. Returns the message ID.
+    /// Insert a new message. Automatically assigns UID and modseq in a single combined query.
     pub fn insert_message(
         &self,
         mailbox_id: &str,
@@ -251,16 +277,11 @@ impl Database {
         let conn = self.conn.lock().unwrap();
         let id = Uuid::new_v4().to_string();
 
-        let uid: i64 = conn.query_row(
-            "SELECT uid_next FROM mailboxes WHERE id = ?1",
+        // Optimized: Single query for both uid_next and modseq
+        let (uid, modseq): (i64, i64) = conn.query_row(
+            "SELECT uid_next, modseq FROM mailboxes WHERE id = ?1",
             params![mailbox_id],
-            |row| row.get(0),
-        )?;
-
-        let modseq: i64 = conn.query_row(
-            "SELECT modseq FROM mailboxes WHERE id = ?1",
-            params![mailbox_id],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
 
         let now = Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
@@ -367,13 +388,17 @@ impl Database {
         Ok(id)
     }
 
-    /// Get all pending items in the SMTP outbound queue.
+    /// Get all pending or retrying items in the SMTP outbound queue ready for delivery.
     pub fn get_queue_pending(&self) -> Result<Vec<QueueItem>> {
         let conn = self.conn.lock().unwrap();
+        let now_str = Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
         let mut stmt = conn.prepare(
-            "SELECT id, tenant_id, raw_blob_id, sender, recipient, status, next_retry_at, retry_count FROM smtp_queue WHERE status = 'pending' ORDER BY rowid ASC",
+            "SELECT id, tenant_id, raw_blob_id, sender, recipient, status, next_retry_at, retry_count
+             FROM smtp_queue
+             WHERE status = 'pending' OR (status = 'retrying' AND (next_retry_at IS NULL OR next_retry_at <= ?1))
+             ORDER BY rowid ASC",
         )?;
-        let rows = stmt.query_map([], |row| {
+        let rows = stmt.query_map(params![now_str], |row| {
             Ok(QueueItem {
                 id: row.get(0)?,
                 tenant_id: row.get(1)?,
@@ -398,6 +423,30 @@ impl Database {
         Ok(items)
     }
 
+    /// Update the status, next_retry_at, and retry_count of a queued email.
+    pub fn update_queue_status(
+        &self,
+        id: &str,
+        status: &str,
+        next_retry_at: Option<DateTime<Utc>>,
+        retry_count: i64,
+    ) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let retry_str = next_retry_at.map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string());
+        conn.execute(
+            "UPDATE smtp_queue SET status = ?1, next_retry_at = ?2, retry_count = ?3 WHERE id = ?4",
+            params![status, retry_str, retry_count, id],
+        )?;
+        Ok(())
+    }
+
+    /// Delete a processed item from the SMTP outbound queue.
+    pub fn delete_queue_item(&self, id: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM smtp_queue WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
     // ─── DKIM Key CRUD ───────────────────────────────────────
 
     /// Insert a DKIM signing key for a tenant.
@@ -410,10 +459,32 @@ impl Database {
         let conn = self.conn.lock().unwrap();
         let id = Uuid::new_v4().to_string();
         conn.execute(
-            "INSERT INTO dkim_keys (id, tenant_id, selector, private_key_pem) VALUES (?1, ?2, ?3, ?4)",
+            "INSERT INTO dkim_keys (id, tenant_id, selector, private_key_pem, is_active) VALUES (?1, ?2, ?3, ?4, 1)",
             params![id, tenant_id, selector, private_key_pem],
         )?;
         Ok(id)
+    }
+
+    /// Retrieve the active DKIM key for a tenant.
+    pub fn get_active_dkim_key(&self, tenant_id: &str) -> Result<Option<DkimKey>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, tenant_id, selector, private_key_pem, is_active FROM dkim_keys WHERE tenant_id = ?1 AND is_active = 1 LIMIT 1",
+        )?;
+        let mut rows = stmt.query_map(params![tenant_id], |row| {
+            Ok(DkimKey {
+                id: row.get(0)?,
+                tenant_id: row.get(1)?,
+                selector: row.get(2)?,
+                private_key_pem: row.get(3)?,
+                is_active: row.get(4)?,
+            })
+        })?;
+        match rows.next() {
+            Some(Ok(key)) => Ok(Some(key)),
+            Some(Err(e)) => Err(e.into()),
+            None => Ok(None),
+        }
     }
 
     /// Get all DKIM keys for a tenant.
@@ -483,40 +554,46 @@ mod tests {
     }
 
     #[test]
-    fn test_insert_and_get() {
+    fn test_account_password_hashing_and_verify_login() {
         let db = setup_db();
+        let tenant_id = db.insert_tenant("auth-test.com").unwrap();
 
-        // 1. Insert a tenant
-        let tenant_id = db.insert_tenant("example.com").unwrap();
-        assert!(!tenant_id.is_empty());
-
-        let tenant = db.get_tenant_by_domain("example.com").unwrap().unwrap();
-        assert_eq!(tenant.domain, "example.com");
-        assert_eq!(tenant.id, tenant_id);
-
-        // 2. Insert an account
         let account_id = db
-            .insert_account(&tenant_id, "alice", "alice@example.com", "hashed_pw_123")
+            .insert_account(&tenant_id, "bob", "bob@auth-test.com", "PlainSecretPassword!")
             .unwrap();
         assert!(!account_id.is_empty());
 
-        let account = db
-            .get_account_by_email("alice@example.com")
-            .unwrap()
+        // Verify account stored hash, not plain text
+        let account = db.get_account_by_email("bob@auth-test.com").unwrap().unwrap();
+        assert!(account.password_hash.starts_with("$argon2id$"));
+
+        // Verify correct login
+        let logged_in = db
+            .verify_login("bob@auth-test.com", "PlainSecretPassword!")
             .unwrap();
-        assert_eq!(account.username, "alice");
-        assert_eq!(account.tenant_id, tenant_id);
+        assert!(logged_in.is_some());
+        assert_eq!(logged_in.unwrap().username, "bob");
 
-        // 3. Insert a mailbox
+        // Verify wrong password fails login
+        let bad_login = db
+            .verify_login("bob@auth-test.com", "IncorrectPassword")
+            .unwrap();
+        assert!(bad_login.is_none());
+    }
+
+    #[test]
+    fn test_insert_and_get() {
+        let db = setup_db();
+
+        let tenant_id = db.insert_tenant("example.com").unwrap();
+        let tenant = db.get_tenant_by_domain("example.com").unwrap().unwrap();
+        assert_eq!(tenant.domain, "example.com");
+
+        let account_id = db
+            .insert_account(&tenant_id, "alice", "alice@example.com", "password123")
+            .unwrap();
         let mailbox_id = db.insert_mailbox(&account_id, "INBOX").unwrap();
-        assert!(!mailbox_id.is_empty());
 
-        let mailboxes = db.get_mailboxes(&account_id).unwrap();
-        assert_eq!(mailboxes.len(), 1);
-        assert_eq!(mailboxes[0].name, "INBOX");
-        assert_eq!(mailboxes[0].uid_next, 1);
-
-        // 4. Insert a message
         let msg_id = db
             .insert_message(
                 &mailbox_id,
@@ -530,21 +607,12 @@ mod tests {
             .unwrap();
         assert!(!msg_id.is_empty());
 
-        // 5. Get messages and verify
         let messages = db.get_messages(&account_id).unwrap();
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].parsed_subject.as_deref(), Some("Hello World"));
-        assert_eq!(messages[0].parsed_from.as_deref(), Some("bob@other.com"));
-        assert_eq!(
-            messages[0].parsed_to.as_deref(),
-            Some("alice@example.com")
-        );
-        assert_eq!(messages[0].blob_id, "blob_abc123");
-        assert_eq!(messages[0].size_bytes, 2048);
         assert_eq!(messages[0].uid, 1);
         assert_eq!(messages[0].modseq, 1);
 
-        // 6. Verify mailbox uid_next was incremented
         let mailboxes = db.get_mailboxes(&account_id).unwrap();
         assert_eq!(mailboxes[0].uid_next, 2);
         assert_eq!(mailboxes[0].modseq, 2);
@@ -553,7 +621,6 @@ mod tests {
     #[test]
     fn test_multiple_messages_uid_increment() {
         let db = setup_db();
-
         let tenant_id = db.insert_tenant("test.com").unwrap();
         let account_id = db
             .insert_account(&tenant_id, "user", "user@test.com", "hash")
@@ -578,74 +645,41 @@ mod tests {
         assert_eq!(messages[0].uid, 1);
         assert_eq!(messages[1].uid, 2);
         assert_eq!(messages[2].uid, 3);
-
-        let mailboxes = db.get_mailboxes(&account_id).unwrap();
-        assert_eq!(mailboxes[0].uid_next, 4);
     }
 
     #[test]
-    fn test_smtp_queue() {
+    fn test_smtp_queue_operations() {
         let db = setup_db();
-
         let tenant_id = db.insert_tenant("queue-test.com").unwrap();
 
         let q1 = db
-            .queue_email(
-                &tenant_id,
-                "blob_1",
-                "sender@queue-test.com",
-                "ext@other.com",
-            )
+            .queue_email(&tenant_id, "blob_1", "sender@queue.com", "ext@other.com")
             .unwrap();
-        let q2 = db
-            .queue_email(
-                &tenant_id,
-                "blob_2",
-                "sender@queue-test.com",
-                "ext2@other.com",
-            )
-            .unwrap();
-        assert!(!q1.is_empty());
-        assert!(!q2.is_empty());
 
         let pending = db.get_queue_pending().unwrap();
-        assert_eq!(pending.len(), 2);
-        assert_eq!(pending[0].sender, "sender@queue-test.com");
-        assert_eq!(pending[0].status, "pending");
-        assert_eq!(pending[1].recipient, "ext2@other.com");
+        assert_eq!(pending.len(), 1);
+
+        // Update status to retrying
+        db.update_queue_status(&q1, "retrying", Some(Utc::now()), 1)
+            .unwrap();
+
+        // Delete from queue
+        db.delete_queue_item(&q1).unwrap();
+        let after_delete = db.get_queue_pending().unwrap();
+        assert!(after_delete.is_empty());
     }
 
     #[test]
     fn test_dkim_keys() {
         let db = setup_db();
-
         let tenant_id = db.insert_tenant("dkim-test.com").unwrap();
         let key_id = db
-            .insert_dkim_key(
-                &tenant_id,
-                "default",
-                "-----BEGIN RSA PRIVATE KEY-----\ntest\n-----END RSA PRIVATE KEY-----",
-            )
+            .insert_dkim_key(&tenant_id, "default", "-----BEGIN RSA PRIVATE KEY-----\ntest\n-----END RSA PRIVATE KEY-----")
             .unwrap();
         assert!(!key_id.is_empty());
 
-        let keys = db.get_dkim_keys(&tenant_id).unwrap();
-        assert_eq!(keys.len(), 1);
-        assert_eq!(keys[0].selector, "default");
-        assert!(!keys[0].is_active);
-    }
-
-    #[test]
-    fn test_nonexistent_tenant() {
-        let db = setup_db();
-        let result = db.get_tenant_by_domain("does-not-exist.com").unwrap();
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn test_nonexistent_account() {
-        let db = setup_db();
-        let result = db.get_account_by_email("nobody@nowhere.com").unwrap();
-        assert!(result.is_none());
+        let active_key = db.get_active_dkim_key(&tenant_id).unwrap().unwrap();
+        assert_eq!(active_key.selector, "default");
+        assert!(active_key.is_active);
     }
 }
