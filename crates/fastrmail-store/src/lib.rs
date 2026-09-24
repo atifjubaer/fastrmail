@@ -11,7 +11,9 @@ use rusqlite::{params, Connection};
 use uuid::Uuid;
 
 use fastrmail_auth::{hash_password, verify_password};
-use fastrmail_core::{Account, DkimKey, Mailbox, Message, QueueItem, SystemStats, Tenant};
+use fastrmail_core::{
+    Account, DkimKey, Mailbox, Message, QueueItem, SieveRule, SieveScript, SystemStats, Tenant,
+};
 
 /// Main database handle wrapping a SQLite connection in a Mutex for thread safety.
 pub struct Database {
@@ -120,11 +122,22 @@ impl Database {
                 UNIQUE(sender_ip, sender, recipient)
             );
 
-            -- Performance Indexes for IMAP, Outbound Queue & Greylist
+            CREATE TABLE IF NOT EXISTS sieve_scripts (
+                id TEXT PRIMARY KEY,
+                account_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                script_json TEXT NOT NULL,
+                is_active BOOLEAN DEFAULT 1,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
+            );
+
+            -- Performance Indexes for IMAP, Outbound Queue, Greylist & Sieve
             CREATE INDEX IF NOT EXISTS idx_messages_account ON messages(account_id);
             CREATE INDEX IF NOT EXISTS idx_messages_mailbox ON messages(mailbox_id, uid);
             CREATE INDEX IF NOT EXISTS idx_smtp_queue_status ON smtp_queue(status);
             CREATE INDEX IF NOT EXISTS idx_greylist_lookup ON greylist(sender_ip, sender, recipient);
+            CREATE INDEX IF NOT EXISTS idx_sieve_account ON sieve_scripts(account_id);
             ",
         )
         .context("Failed to initialize database schema")?;
@@ -887,6 +900,75 @@ impl Database {
         Ok(id)
     }
 
+    // ─── Sieve Scripts & Rules CRUD ──────────────────────────
+
+    /// Insert or update a Sieve script for an account.
+    pub fn insert_sieve_script(
+        &self,
+        account_id: &str,
+        name: &str,
+        script_json: &str,
+        is_active: bool,
+    ) -> Result<String> {
+        let conn = self.conn.lock().unwrap();
+        let id = Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT INTO sieve_scripts (id, account_id, name, script_json, is_active) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![id, account_id, name, script_json, is_active],
+        )?;
+        Ok(id)
+    }
+
+    /// Retrieve all Sieve scripts for an account.
+    pub fn get_sieve_scripts(&self, account_id: &str) -> Result<Vec<SieveScript>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, account_id, name, script_json, is_active, created_at FROM sieve_scripts WHERE account_id = ?1 ORDER BY created_at DESC",
+        )?;
+        let rows = stmt.query_map(params![account_id], |row| {
+            Ok(SieveScript {
+                id: row.get(0)?,
+                account_id: row.get(1)?,
+                name: row.get(2)?,
+                script_json: row.get(3)?,
+                is_active: row.get(4)?,
+                created_at: row.get::<_, String>(5).map(|s| {
+                    chrono::NaiveDateTime::parse_from_str(&s, "%Y-%m-%d %H:%M:%S")
+                        .map(|ndt| ndt.and_utc())
+                        .unwrap_or_else(|_| Utc::now())
+                })?,
+            })
+        })?;
+        let mut scripts = Vec::new();
+        for r in rows {
+            scripts.push(r?);
+        }
+        Ok(scripts)
+    }
+
+    /// Retrieve all active parsed Sieve rules for an account.
+    pub fn get_active_sieve_rules(&self, account_id: &str) -> Result<Vec<SieveRule>> {
+        let scripts = self.get_sieve_scripts(account_id)?;
+        let mut rules = Vec::new();
+        for s in scripts {
+            if s.is_active {
+                if let Ok(rule) = serde_json::from_str::<SieveRule>(&s.script_json) {
+                    rules.push(rule);
+                } else if let Ok(rule_vec) = serde_json::from_str::<Vec<SieveRule>>(&s.script_json) {
+                    rules.extend(rule_vec);
+                }
+            }
+        }
+        Ok(rules)
+    }
+
+    /// Delete a Sieve script by ID.
+    pub fn delete_sieve_script(&self, id: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM sieve_scripts WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
     // ─── Utility ─────────────────────────────────────────────
 
     /// Check if a specific table exists in the database.
@@ -1180,5 +1262,38 @@ mod tests {
         // 5. Subsequent attempts: already passed, returns true immediately
         let subsequent = db.check_greylist(ip, sender, recipient).unwrap();
         assert!(subsequent, "Subsequent checks for passed tuple must return true");
+    }
+
+    #[test]
+    fn test_sieve_scripts_crud() {
+        let db = setup_db();
+        let t1 = db.insert_tenant("sieve.test").unwrap();
+        let a1 = db.insert_account(&t1, "user", "user@sieve.test", "pass").unwrap();
+
+        let rule = SieveRule {
+            id: "r1".to_string(),
+            name: "Spam rule".to_string(),
+            field: fastrmail_core::SieveField::Subject,
+            operator: fastrmail_core::SieveOperator::Contains,
+            value: "lottery".to_string(),
+            action: fastrmail_core::SieveAction::Discard,
+            is_active: true,
+        };
+        let rule_json = serde_json::to_string(&rule).unwrap();
+
+        let s_id = db.insert_sieve_script(&a1, "Main Filter", &rule_json, true).unwrap();
+        assert!(!s_id.is_empty());
+
+        let scripts = db.get_sieve_scripts(&a1).unwrap();
+        assert_eq!(scripts.len(), 1);
+        assert_eq!(scripts[0].name, "Main Filter");
+
+        let active_rules = db.get_active_sieve_rules(&a1).unwrap();
+        assert_eq!(active_rules.len(), 1);
+        assert_eq!(active_rules[0].value, "lottery");
+
+        db.delete_sieve_script(&s_id).unwrap();
+        let after_del = db.get_sieve_scripts(&a1).unwrap();
+        assert!(after_del.is_empty());
     }
 }

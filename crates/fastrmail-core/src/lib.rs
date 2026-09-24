@@ -106,6 +106,85 @@ impl Default for Config {
     }
 }
 
+/// Field in an incoming email to evaluate in a Sieve filter.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum SieveField {
+    Subject,
+    From,
+    To,
+    Body,
+}
+
+/// Comparison operator for Sieve evaluation.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum SieveOperator {
+    Contains,
+    Equals,
+    StartsWith,
+    EndsWith,
+}
+
+/// Action to execute when a Sieve rule matches.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum SieveAction {
+    Discard,
+    Reject { reason: Option<String> },
+    FileInto { mailbox: String },
+    MarkRead,
+    AddFlag { flag: String },
+}
+
+/// A structured Sieve rule for automated inbound filtering.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SieveRule {
+    pub id: String,
+    pub name: String,
+    pub field: SieveField,
+    pub operator: SieveOperator,
+    pub value: String,
+    pub action: SieveAction,
+    pub is_active: bool,
+}
+
+impl SieveRule {
+    /// Evaluate if this rule matches the given message fields.
+    pub fn matches(&self, subject: &str, from: &str, to: &str, body: &str) -> bool {
+        if !self.is_active {
+            return false;
+        }
+        let target = match self.field {
+            SieveField::Subject => subject,
+            SieveField::From => from,
+            SieveField::To => to,
+            SieveField::Body => body,
+        };
+
+        let target_lower = target.to_lowercase();
+        let val_lower = self.value.to_lowercase();
+
+        match self.operator {
+            SieveOperator::Contains => target_lower.contains(&val_lower),
+            SieveOperator::Equals => target_lower == val_lower,
+            SieveOperator::StartsWith => target_lower.starts_with(&val_lower),
+            SieveOperator::EndsWith => target_lower.ends_with(&val_lower),
+        }
+    }
+}
+
+/// Record representing a stored Sieve script/rule-set for an account.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SieveScript {
+    pub id: String,
+    pub account_id: String,
+    pub name: String,
+    pub script_json: String,
+    pub is_active: bool,
+    pub created_at: DateTime<Utc>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -151,5 +230,26 @@ mod tests {
         let deserialized: Message = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized.id, "m1");
         assert_eq!(deserialized.size_bytes, 1024);
+    }
+
+    #[test]
+    fn test_sieve_rule_matching() {
+        let rule = SieveRule {
+            id: "r1".to_string(),
+            name: "Spam discard".to_string(),
+            field: SieveField::Subject,
+            operator: SieveOperator::Contains,
+            value: "viagra".to_string(),
+            action: SieveAction::Discard,
+            is_active: true,
+        };
+
+        assert!(rule.matches("Buy cheap VIAGRA today!", "bad@spam.com", "me@home.com", ""));
+        assert!(!rule.matches("Clean meeting notes", "boss@corp.com", "me@home.com", ""));
+
+        let json = serde_json::to_string(&rule).unwrap();
+        let decoded: SieveRule = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.name, "Spam discard");
+        assert_eq!(decoded.action, SieveAction::Discard);
     }
 }
