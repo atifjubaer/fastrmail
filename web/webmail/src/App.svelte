@@ -38,7 +38,7 @@
     html_body: string | null;
   }
 
-  const API_BASE = "http://localhost:8080";
+  const API_BASE = "";
 
   let mailboxes = $state<Mailbox[]>([]);
   let selectedMailbox = $state<Mailbox | null>(null);

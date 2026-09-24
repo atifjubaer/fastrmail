@@ -34,7 +34,7 @@
     retry_count: number;
   }
 
-  const API_BASE = "http://localhost:8080";
+  const API_BASE = "";
 
   let activeTab = $state<"overview" | "domains" | "accounts" | "queue">("overview");
   let stats = $state<Stats>({
