@@ -25,7 +25,7 @@ RUN apk add --no-cache musl-dev sqlite-dev openssl-dev build-base pkgconfig
 WORKDIR /app
 
 # Copy workspace manifest and lockfile
-COPY Cargo.toml Cargo.lock ./
+COPY Cargo.toml Cargo.lock* ./
 COPY crates/fastrmail-core/Cargo.toml ./crates/fastrmail-core/
 COPY crates/fastrmail-auth/Cargo.toml ./crates/fastrmail-auth/
 COPY crates/fastrmail-store/Cargo.toml ./crates/fastrmail-store/
