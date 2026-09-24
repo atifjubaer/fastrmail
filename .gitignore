@@ -10,6 +10,11 @@ web/webmail/dist/
 
 # Data
 /data/
+**/data/
+*.db
+*.db-wal
+*.db-shm
+*.eml
 
 # IDE
 .vscode/
