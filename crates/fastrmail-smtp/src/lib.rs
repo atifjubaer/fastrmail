@@ -13,13 +13,17 @@ use tokio::net::{TcpListener, TcpStream};
 use tracing::{error, info, warn};
 use uuid::Uuid;
 
+use mail_parser::MessageParser;
 use fastrmail_auth::{DkimVerifier, DmarcEvaluator, SpfVerifier};
+use fastrmail_core::Message;
+use fastrmail_search::SearchEngine;
 use fastrmail_store::Database;
 
 /// SMTP server that accepts inbound email connections.
 pub struct SmtpServer {
     db: Arc<Database>,
     data_dir: String,
+    search_engine: Option<Arc<SearchEngine>>,
 }
 
 /// Internal state of a single SMTP session.
@@ -54,7 +58,17 @@ impl SmtpSession {
 impl SmtpServer {
     /// Create a new SMTP server backed by the given database.
     pub fn new(db: Arc<Database>, data_dir: String) -> Self {
-        Self { db, data_dir }
+        Self {
+            db,
+            data_dir,
+            search_engine: None,
+        }
+    }
+
+    /// Attach an optional Tantivy SearchEngine for automatic inbound email indexing.
+    pub fn with_search_engine(mut self, search_engine: Arc<SearchEngine>) -> Self {
+        self.search_engine = Some(search_engine);
+        self
     }
 
     /// Start the SMTP listener on the given address (e.g., "0.0.0.0:2525").
@@ -71,8 +85,9 @@ impl SmtpServer {
                     info!("SMTP connection from {peer_addr}");
                     let db = Arc::clone(&self.db);
                     let data_dir = self.data_dir.clone();
+                    let search_engine = self.search_engine.clone();
                     tokio::spawn(async move {
-                        if let Err(e) = handle_connection(stream, peer_addr, db, data_dir).await {
+                        if let Err(e) = handle_connection(stream, peer_addr, db, data_dir, search_engine).await {
                             error!("SMTP session error from {peer_addr}: {e}");
                         }
                     });
@@ -96,6 +111,7 @@ impl SmtpServer {
 
         let db = Arc::clone(&self.db);
         let data_dir = self.data_dir.clone();
+        let search_engine = self.search_engine.clone();
 
         tokio::spawn(async move {
             loop {
@@ -104,8 +120,9 @@ impl SmtpServer {
                         info!("SMTP connection from {peer_addr}");
                         let db = Arc::clone(&db);
                         let data_dir = data_dir.clone();
+                        let search_engine = search_engine.clone();
                         tokio::spawn(async move {
-                            if let Err(e) = handle_connection(stream, peer_addr, db, data_dir).await {
+                            if let Err(e) = handle_connection(stream, peer_addr, db, data_dir, search_engine).await {
                                 error!("SMTP session error from {peer_addr}: {e}");
                             }
                         });
@@ -151,6 +168,7 @@ async fn handle_connection(
     peer_addr: SocketAddr,
     db: Arc<Database>,
     data_dir: String,
+    search_engine: Option<Arc<SearchEngine>>,
 ) -> Result<()> {
     let (reader, mut writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
@@ -340,7 +358,7 @@ async fn handle_connection(
             };
 
             // Insert the message into the database
-            db.insert_message(
+            let msg_id = db.insert_message(
                 &inbox_id,
                 &account_id,
                 &blob_id,
@@ -349,6 +367,38 @@ async fn handle_connection(
                 from.as_deref(),
                 to.as_deref(),
             )?;
+
+            // Index in Tantivy search engine if configured
+            if let Some(ref engine) = search_engine {
+                let plain_body = MessageParser::default()
+                    .parse(final_message.as_bytes())
+                    .and_then(|p| p.body_text(0).map(|s| s.to_string()))
+                    .unwrap_or_else(|| data.clone());
+
+                let (uid, modseq) = match db.get_mailbox_by_id(&inbox_id) {
+                    Ok(Some(mb)) => (mb.uid_next - 1, mb.modseq),
+                    _ => (1, 1),
+                };
+
+                let msg_to_index = Message {
+                    id: msg_id.clone(),
+                    mailbox_id: inbox_id.clone(),
+                    account_id: account_id.clone(),
+                    uid,
+                    modseq,
+                    blob_id: blob_id.clone(),
+                    size_bytes,
+                    parsed_subject: subject.clone(),
+                    parsed_from: from.clone(),
+                    parsed_to: to.clone(),
+                    internal_date: chrono::Utc::now(),
+                    flags: "[]".to_string(),
+                };
+
+                if let Err(e) = engine.index_message(&msg_to_index, &plain_body) {
+                    warn!("Failed to index message in Tantivy: {e}");
+                }
+            }
 
             info!(
                 "Message saved: blob={blob_id} from={} to={} subject={}",
@@ -653,6 +703,75 @@ mod tests {
             after_delivery.is_empty(),
             "Queue should be empty after successful delivery"
         );
+
+        std::fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[tokio::test]
+    async fn test_smtp_inbound_with_tantivy_indexing() {
+        let db = Database::new_memory().expect("Failed to create in-memory DB");
+        db.init_schema().expect("Failed to init schema");
+        let db = Arc::new(db);
+
+        let search_engine = Arc::new(SearchEngine::new_in_ram().unwrap());
+
+        let temp_dir = std::env::temp_dir().join(format!("fastrmail_smtp_search_{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let data_dir = temp_dir.to_string_lossy().to_string();
+
+        let server = SmtpServer::new(Arc::clone(&db), data_dir.clone())
+            .with_search_engine(Arc::clone(&search_engine));
+        let server_addr = server.start_with_addr("127.0.0.1:0").await.unwrap();
+
+        // Connect and send an email with unique keyword "quantum-teleportation"
+        let stream = TcpStream::connect(server_addr).await.unwrap();
+        let (read_half, mut write_half) = stream.into_split();
+        let mut reader = BufReader::new(read_half);
+        let mut line = String::new();
+
+        reader.read_line(&mut line).await.unwrap();
+
+        write_half.write_all(b"EHLO test.local\r\n").await.unwrap();
+        loop {
+            line.clear();
+            reader.read_line(&mut line).await.unwrap();
+            if line.starts_with("250 ") {
+                break;
+            }
+        }
+
+        write_half.write_all(b"MAIL FROM:<scientist@lab.local>\r\n").await.unwrap();
+        line.clear();
+        reader.read_line(&mut line).await.unwrap();
+        assert!(line.starts_with("250"));
+
+        write_half.write_all(b"RCPT TO:<alice@localhost>\r\n").await.unwrap();
+        line.clear();
+        reader.read_line(&mut line).await.unwrap();
+        assert!(line.starts_with("250"));
+
+        write_half.write_all(b"DATA\r\n").await.unwrap();
+        line.clear();
+        reader.read_line(&mut line).await.unwrap();
+        assert!(line.starts_with("354"));
+
+        let email_body = b"From: scientist@lab.local\r\n\
+                           To: alice@localhost\r\n\
+                           Subject: Research Paper on Quantum Computing\r\n\
+                           \r\n\
+                           We have achieved quantum-teleportation in our new laboratory experiments.\r\n\
+                           .\r\n";
+        write_half.write_all(email_body).await.unwrap();
+        line.clear();
+        reader.read_line(&mut line).await.unwrap();
+        assert!(line.starts_with("250"));
+
+        write_half.write_all(b"QUIT\r\n").await.unwrap();
+
+        // Verify that Tantivy indexed the email and can find "quantum-teleportation"
+        let account = db.get_account_by_email("alice@localhost").unwrap().unwrap();
+        let results = search_engine.search(&account.id, "quantum-teleportation", 10).unwrap();
+        assert_eq!(results.len(), 1, "Should find indexed message by unique keyword");
 
         std::fs::remove_dir_all(&temp_dir).ok();
     }

@@ -16,6 +16,8 @@ fastrmail-store = { path = "../fastrmail-store" }
 fastrmail-smtp = { path = "../fastrmail-smtp" }
 fastrmail-auth = { path = "../fastrmail-auth" }
 fastrmail-imap = { path = "../fastrmail-imap" }
+fastrmail-search = { path = "../fastrmail-search" }
+fastrmail-jmap = { path = "../fastrmail-jmap" }
 tokio = { version = "1", features = ["full"] }
 axum = "0.7"
 tower-http = { version = "0.5", features = ["fs", "cors", "trace"] }

@@ -8,7 +8,10 @@ description = "Tantivy-based full-text search engine for FastrMail"
 
 [dependencies]
 fastrmail-core = { path = "../fastrmail-core" }
+fastrmail-store = { path = "../fastrmail-store" }
 tantivy = "0.22"
+tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
+chrono = { version = "0.4", features = ["serde"] }
 anyhow = "1"
 tracing = "0.1"

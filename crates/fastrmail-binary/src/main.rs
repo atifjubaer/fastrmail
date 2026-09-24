@@ -16,6 +16,8 @@ use uuid::Uuid;
 use fastrmail_auth::DkimSigner;
 use fastrmail_core::{Account, QueueItem, SystemStats, Tenant};
 use fastrmail_imap::ImapServer;
+use fastrmail_jmap::{build_jmap_router, JmapState};
+use fastrmail_search::SearchEngine;
 use fastrmail_smtp::{OutboundEngine, SmtpServer};
 use fastrmail_store::Database;
 
@@ -23,6 +25,7 @@ use fastrmail_store::Database;
 pub struct AppState {
     pub db: Arc<Database>,
     pub data_dir: String,
+    pub search_engine: Arc<SearchEngine>,
 }
 
 // ─── Request / Response Types ────────────────────────────────
@@ -811,8 +814,13 @@ async fn list_admin_queue(
 
 // ─── Router Builder ──────────────────────────────────────────
 
-/// Build the Axum router with all public, webmail, and admin routes.
+/// Build the Axum router with all public, webmail, admin, and JMAP RFC 8620/8621 routes.
 pub fn build_router(state: Arc<AppState>) -> Router {
+    let jmap_state = JmapState {
+        db: Arc::clone(&state.db),
+        search_engine: Arc::clone(&state.search_engine),
+    };
+
     Router::new()
         // Health
         .route("/api/health", get(health_check))
@@ -844,6 +852,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .with_state(state)
+        .merge(build_jmap_router(jmap_state))
 }
 
 /// Generate a DKIM key pair, record it in the database, and return the formatted DNS TXT record.
@@ -911,9 +920,14 @@ async fn main() -> anyhow::Result<()> {
     // Ensure default account exists
     let _ = get_or_create_default_account(&db);
 
+    // Initialize full-text search engine
+    let search_engine = Arc::new(SearchEngine::new("data/index")?);
+    info!("Tantivy full-text search engine initialized at data/index");
+
     // 1. Spawn Inbound SMTP Server on :2525
     let smtp_db = Arc::clone(&db);
-    let smtp_server = SmtpServer::new(smtp_db, "data".to_string());
+    let smtp_server = SmtpServer::new(smtp_db, "data".to_string())
+        .with_search_engine(Arc::clone(&search_engine));
     tokio::spawn(async move {
         if let Err(e) = smtp_server.start("0.0.0.0:2525").await {
             tracing::error!("SMTP server error: {e}");
@@ -938,10 +952,11 @@ async fn main() -> anyhow::Result<()> {
     outbound_engine.start(shutdown_rx);
     info!("Outbound SMTP delivery worker running");
 
-    // 4. Start Axum HTTP API Server on :8080
+    // 4. Start Axum HTTP API Server on :8080 (including JMAP RFC 8620/8621)
     let state = Arc::new(AppState {
         db,
         data_dir: "data".to_string(),
+        search_engine,
     });
     let app = build_router(state);
 
@@ -951,6 +966,7 @@ async fn main() -> anyhow::Result<()> {
     println!("  SMTP listening on :2525");
     println!("  IMAP listening on :1143");
     println!("  HTTP API listening on :8080");
+    println!("  JMAP API listening on :8080/jmap");
     println!();
 
     axum::serve(listener, app).await?;
@@ -967,9 +983,11 @@ mod tests {
         db.init_schema().expect("Failed to init schema");
         let temp_dir = std::env::temp_dir().join(Uuid::new_v4().to_string());
         std::fs::create_dir_all(&temp_dir).unwrap();
+        let search_engine = Arc::new(SearchEngine::new_in_ram().expect("Failed to create in-ram search engine"));
         Arc::new(AppState {
             db: Arc::new(db),
             data_dir: temp_dir.to_str().unwrap().to_string(),
+            search_engine,
         })
     }
 
@@ -1086,6 +1104,37 @@ mod tests {
         .await
         .unwrap();
         assert!(dkim_res.0.dns_record.contains("v=DKIM1; k=rsa;"));
+
+        let _ = std::fs::remove_dir_all(&state.data_dir);
+    }
+
+    #[tokio::test]
+    async fn test_jmap_router_session_integration() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let state = setup_test_state();
+        let app = build_router(state.clone());
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let request = format!(
+            "GET /jmap/session HTTP/1.1\r\nHost: {}\r\nAuthorization: Bearer user@fastrmail.local\r\nConnection: close\r\n\r\n",
+            addr
+        );
+        stream.write_all(request.as_bytes()).await.unwrap();
+
+        let mut response = String::new();
+        stream.read_to_string(&mut response).await.unwrap();
+
+        assert!(response.starts_with("HTTP/1.1 200 OK"));
+        assert!(response.contains("urn:ietf:params:jmap:core"));
+        assert!(response.contains("urn:ietf:params:jmap:mail"));
 
         let _ = std::fs::remove_dir_all(&state.data_dir);
     }
