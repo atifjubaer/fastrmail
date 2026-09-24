@@ -1,0 +1,13 @@
+[package]
+name = "fastrmail-auth"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "DKIM/SPF/DMARC/ARC + User Auth (JWT/OAuth) for FastrMail"
+
+[dependencies]
+fastrmail-core = { path = "../fastrmail-core" }
+serde = { version = "1", features = ["derive"] }
+anyhow = "1"
+tracing = "0.1"

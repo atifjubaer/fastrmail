@@ -1,0 +1,25 @@
+[package]
+name = "fastrmail-binary"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Entry point binary for FastrMail mail server"
+
+[[bin]]
+name = "fastrmail"
+path = "src/main.rs"
+
+[dependencies]
+fastrmail-core = { path = "../fastrmail-core" }
+fastrmail-store = { path = "../fastrmail-store" }
+fastrmail-smtp = { path = "../fastrmail-smtp" }
+tokio = { version = "1", features = ["full"] }
+axum = "0.7"
+tower-http = { version = "0.5", features = ["fs", "cors", "trace"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1"

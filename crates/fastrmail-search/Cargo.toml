@@ -1,0 +1,14 @@
+[package]
+name = "fastrmail-search"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Tantivy-based full-text search engine for FastrMail"
+
+[dependencies]
+fastrmail-core = { path = "../fastrmail-core" }
+tantivy = "0.22"
+serde = { version = "1", features = ["derive"] }
+anyhow = "1"
+tracing = "0.1"
