@@ -14,7 +14,7 @@ use tracing::{error, info, warn};
 use uuid::Uuid;
 
 use mail_parser::MessageParser;
-use fastrmail_auth::{DkimVerifier, DmarcEvaluator, SpfVerifier};
+use fastrmail_auth::{DkimVerifier, DmarcEvaluator, DnsblVerifier, SpfVerifier};
 use fastrmail_core::Message;
 use fastrmail_search::SearchEngine;
 use fastrmail_store::Database;
@@ -24,6 +24,8 @@ pub struct SmtpServer {
     db: Arc<Database>,
     data_dir: String,
     search_engine: Option<Arc<SearchEngine>>,
+    dnsbl_verifier: Option<Arc<DnsblVerifier>>,
+    bypass_spam_check: bool,
 }
 
 /// Internal state of a single SMTP session.
@@ -62,12 +64,26 @@ impl SmtpServer {
             db,
             data_dir,
             search_engine: None,
+            dnsbl_verifier: Some(Arc::new(DnsblVerifier::new())),
+            bypass_spam_check: false,
         }
     }
 
     /// Attach an optional Tantivy SearchEngine for automatic inbound email indexing.
     pub fn with_search_engine(mut self, search_engine: Arc<SearchEngine>) -> Self {
         self.search_engine = Some(search_engine);
+        self
+    }
+
+    /// Attach an optional custom DNSBL verifier (useful for testing or custom blocklists).
+    pub fn with_dnsbl_verifier(mut self, dnsbl_verifier: Arc<DnsblVerifier>) -> Self {
+        self.dnsbl_verifier = Some(dnsbl_verifier);
+        self
+    }
+
+    /// Configure whether spam checks (DNSBL and Greylisting) should be bypassed.
+    pub fn with_bypass_spam_check(mut self, bypass: bool) -> Self {
+        self.bypass_spam_check = bypass;
         self
     }
 
@@ -86,8 +102,10 @@ impl SmtpServer {
                     let db = Arc::clone(&self.db);
                     let data_dir = self.data_dir.clone();
                     let search_engine = self.search_engine.clone();
+                    let dnsbl = self.dnsbl_verifier.clone();
+                    let bypass = self.bypass_spam_check;
                     tokio::spawn(async move {
-                        if let Err(e) = handle_connection(stream, peer_addr, db, data_dir, search_engine).await {
+                        if let Err(e) = handle_connection(stream, peer_addr, db, data_dir, search_engine, dnsbl, bypass).await {
                             error!("SMTP session error from {peer_addr}: {e}");
                         }
                     });
@@ -112,6 +130,8 @@ impl SmtpServer {
         let db = Arc::clone(&self.db);
         let data_dir = self.data_dir.clone();
         let search_engine = self.search_engine.clone();
+        let dnsbl = self.dnsbl_verifier.clone();
+        let bypass = self.bypass_spam_check;
 
         tokio::spawn(async move {
             loop {
@@ -121,8 +141,9 @@ impl SmtpServer {
                         let db = Arc::clone(&db);
                         let data_dir = data_dir.clone();
                         let search_engine = search_engine.clone();
+                        let dnsbl = dnsbl.clone();
                         tokio::spawn(async move {
-                            if let Err(e) = handle_connection(stream, peer_addr, db, data_dir, search_engine).await {
+                            if let Err(e) = handle_connection(stream, peer_addr, db, data_dir, search_engine, dnsbl, bypass).await {
                                 error!("SMTP session error from {peer_addr}: {e}");
                             }
                         });
@@ -169,6 +190,8 @@ async fn handle_connection(
     db: Arc<Database>,
     data_dir: String,
     search_engine: Option<Arc<SearchEngine>>,
+    dnsbl_verifier: Option<Arc<DnsblVerifier>>,
+    bypass_spam_check: bool,
 ) -> Result<()> {
     let (reader, mut writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
@@ -224,7 +247,39 @@ async fn handle_connection(
                 continue;
             }
             let addr_part = &line[8..]; // After "RCPT TO:"
-            session.recipients.push(parse_address(addr_part));
+            let recipient = parse_address(addr_part);
+            let sender = session.sender.as_deref().unwrap_or("");
+
+            // Spam & Reputation Verification (DNSBL + Greylisting)
+            if !bypass_spam_check {
+                // 1. DNSBL check
+                if let Some(dnsbl) = &dnsbl_verifier {
+                    if dnsbl.check_ip(peer_addr.ip()).await.unwrap_or(false) {
+                        writer
+                            .write_all(
+                                format!(
+                                    "554 5.7.1 Service unavailable; Client host [{}] blocked using DNSBL\r\n",
+                                    peer_addr.ip()
+                                )
+                                .as_bytes(),
+                            )
+                            .await?;
+                        return Ok(());
+                    }
+                }
+
+                // 2. Greylisting check
+                let client_ip = peer_addr.ip().to_string();
+                let passed = db.check_greylist(&client_ip, sender, &recipient).unwrap_or(true);
+                if !passed {
+                    writer
+                        .write_all(b"451 4.7.1 Greylisting in action, please try again later\r\n")
+                        .await?;
+                    return Ok(());
+                }
+            }
+
+            session.recipients.push(recipient);
             writer.write_all(b"250 OK\r\n").await?;
         } else if upper == "DATA" {
             if session.recipients.is_empty() {
@@ -472,7 +527,8 @@ mod tests {
         std::fs::create_dir_all(&temp_dir).unwrap();
         let data_dir = temp_dir.to_string_lossy().to_string();
 
-        let server = SmtpServer::new(Arc::clone(&db), data_dir.clone());
+        let server = SmtpServer::new(Arc::clone(&db), data_dir.clone())
+            .with_bypass_spam_check(true);
         let addr = server
             .start_with_addr("127.0.0.1:0")
             .await
@@ -549,7 +605,8 @@ mod tests {
         std::fs::create_dir_all(&temp_dir).unwrap();
         let data_dir = temp_dir.to_string_lossy().to_string();
 
-        let server = SmtpServer::new(Arc::clone(&db), data_dir.clone());
+        let server = SmtpServer::new(Arc::clone(&db), data_dir.clone())
+            .with_bypass_spam_check(true);
         let addr = server
             .start_with_addr("127.0.0.1:0")
             .await
@@ -601,7 +658,8 @@ mod tests {
         std::fs::create_dir_all(&temp_dir).unwrap();
         let data_dir = temp_dir.to_string_lossy().to_string();
 
-        let server = SmtpServer::new(Arc::clone(&db), data_dir.clone());
+        let server = SmtpServer::new(Arc::clone(&db), data_dir.clone())
+            .with_bypass_spam_check(true);
         let addr = server
             .start_with_addr("127.0.0.1:0")
             .await
@@ -665,7 +723,8 @@ mod tests {
         let data_dir = temp_dir.to_string_lossy().to_string();
 
         // 1. Start a mock receiving SMTP server on port 0
-        let mock_server = SmtpServer::new(Arc::clone(&db), data_dir.clone());
+        let mock_server = SmtpServer::new(Arc::clone(&db), data_dir.clone())
+            .with_bypass_spam_check(true);
         let mock_addr = mock_server.start_with_addr("127.0.0.1:0").await.unwrap();
         let mock_port = mock_addr.port();
 
@@ -720,7 +779,8 @@ mod tests {
         let data_dir = temp_dir.to_string_lossy().to_string();
 
         let server = SmtpServer::new(Arc::clone(&db), data_dir.clone())
-            .with_search_engine(Arc::clone(&search_engine));
+            .with_search_engine(Arc::clone(&search_engine))
+            .with_bypass_spam_check(true);
         let server_addr = server.start_with_addr("127.0.0.1:0").await.unwrap();
 
         // Connect and send an email with unique keyword "quantum-teleportation"
@@ -772,6 +832,96 @@ mod tests {
         let account = db.get_account_by_email("alice@localhost").unwrap().unwrap();
         let results = search_engine.search(&account.id, "quantum-teleportation", 10).unwrap();
         assert_eq!(results.len(), 1, "Should find indexed message by unique keyword");
+
+        std::fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[tokio::test]
+    async fn test_smtp_greylisting_deferral_and_pass() {
+        let db = Database::new_memory().expect("Failed to create in-memory DB");
+        db.init_schema().expect("Failed to init schema");
+        let db = Arc::new(db);
+
+        let temp_dir = std::env::temp_dir().join(format!("fastrmail_gl_{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let data_dir = temp_dir.to_string_lossy().to_string();
+
+        // Server with greylisting enabled (bypass_spam_check = false)
+        let server = SmtpServer::new(Arc::clone(&db), data_dir.clone());
+        let addr = server.start_with_addr("127.0.0.1:0").await.unwrap();
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // Attempt 1: First time sender -> greylisted with 451
+        let stream = TcpStream::connect(addr).await.unwrap();
+        let (read_half, mut write_half) = stream.into_split();
+        let mut reader = BufReader::new(read_half);
+
+        let _ = read_response(&mut reader).await;
+        write_half.write_all(b"EHLO client.local\r\n").await.unwrap();
+        let _ = read_multiline_response(&mut reader).await;
+        write_half.write_all(b"MAIL FROM:<new_sender@remote.org>\r\n").await.unwrap();
+        let _ = read_response(&mut reader).await;
+        write_half.write_all(b"RCPT TO:<alice@localhost>\r\n").await.unwrap();
+
+        let rcpt_resp = read_response(&mut reader).await;
+        assert!(rcpt_resp.starts_with("451"), "Expected 451 greylisting, got: {rcpt_resp}");
+        assert!(rcpt_resp.contains("Greylisting in action"));
+
+        // Seed DB as if 6 minutes have passed
+        let six_mins_ago = chrono::Utc::now() - chrono::Duration::minutes(6);
+        db.insert_greylist_record("127.0.0.1", "new_sender@remote.org", "alice@localhost", six_mins_ago, false).unwrap();
+
+        // Attempt 2: Retry after window elapsed -> passes with 250 OK
+        let stream2 = TcpStream::connect(addr).await.unwrap();
+        let (read_half2, mut write_half2) = stream2.into_split();
+        let mut reader2 = BufReader::new(read_half2);
+
+        let _ = read_response(&mut reader2).await;
+        write_half2.write_all(b"EHLO client.local\r\n").await.unwrap();
+        let _ = read_multiline_response(&mut reader2).await;
+        write_half2.write_all(b"MAIL FROM:<new_sender@remote.org>\r\n").await.unwrap();
+        let _ = read_response(&mut reader2).await;
+        write_half2.write_all(b"RCPT TO:<alice@localhost>\r\n").await.unwrap();
+
+        let rcpt_resp2 = read_response(&mut reader2).await;
+        assert!(rcpt_resp2.starts_with("250"), "Expected 250 OK after greylist delay, got: {rcpt_resp2}");
+
+        write_half2.write_all(b"QUIT\r\n").await.unwrap();
+        std::fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[tokio::test]
+    async fn test_smtp_dnsbl_rejection() {
+        let db = Database::new_memory().expect("Failed to create in-memory DB");
+        db.init_schema().expect("Failed to init schema");
+        let db = Arc::new(db);
+
+        let temp_dir = std::env::temp_dir().join(format!("fastrmail_dnsbl_{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let data_dir = temp_dir.to_string_lossy().to_string();
+
+        // Server with mock blocked DNSBL
+        let server = SmtpServer::new(Arc::clone(&db), data_dir.clone())
+            .with_dnsbl_verifier(Arc::new(DnsblVerifier::mock_blocked()));
+        let addr = server.start_with_addr("127.0.0.1:0").await.unwrap();
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let stream = TcpStream::connect(addr).await.unwrap();
+        let (read_half, mut write_half) = stream.into_split();
+        let mut reader = BufReader::new(read_half);
+
+        let _ = read_response(&mut reader).await;
+        write_half.write_all(b"EHLO spammer.local\r\n").await.unwrap();
+        let _ = read_multiline_response(&mut reader).await;
+        write_half.write_all(b"MAIL FROM:<bad@spammer.org>\r\n").await.unwrap();
+        let _ = read_response(&mut reader).await;
+        write_half.write_all(b"RCPT TO:<alice@localhost>\r\n").await.unwrap();
+
+        let rcpt_resp = read_response(&mut reader).await;
+        assert!(rcpt_resp.starts_with("554"), "Expected 554 DNSBL block, got: {rcpt_resp}");
+        assert!(rcpt_resp.contains("blocked using DNSBL"));
 
         std::fs::remove_dir_all(&temp_dir).ok();
     }
