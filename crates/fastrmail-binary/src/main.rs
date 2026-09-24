@@ -9,6 +9,7 @@ use axum::{Json, Router};
 use mail_parser::MessageParser;
 use serde::{Deserialize, Serialize};
 use tower_http::cors::CorsLayer;
+use tower_http::services::ServeDir;
 use tower_http::trace::TraceLayer;
 use tracing::info;
 use uuid::Uuid;
@@ -821,7 +822,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         search_engine: Arc::clone(&state.search_engine),
     };
 
-    Router::new()
+    let mut router = Router::new()
         // Health
         .route("/api/health", get(health_check))
         // Transactional Email API
@@ -852,7 +853,16 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .with_state(state)
-        .merge(build_jmap_router(jmap_state))
+        .merge(build_jmap_router(jmap_state));
+
+    if std::path::Path::new("web/admin/dist").exists() {
+        router = router.nest_service("/admin", ServeDir::new("web/admin/dist"));
+    }
+    if std::path::Path::new("web/webmail/dist").exists() {
+        router = router.fallback_service(ServeDir::new("web/webmail/dist"));
+    }
+
+    router
 }
 
 /// Generate a DKIM key pair, record it in the database, and return the formatted DNS TXT record.
