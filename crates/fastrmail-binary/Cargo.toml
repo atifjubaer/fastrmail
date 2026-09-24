@@ -14,6 +14,7 @@ path = "src/main.rs"
 fastrmail-core = { path = "../fastrmail-core" }
 fastrmail-store = { path = "../fastrmail-store" }
 fastrmail-smtp = { path = "../fastrmail-smtp" }
+fastrmail-auth = { path = "../fastrmail-auth" }
 tokio = { version = "1", features = ["full"] }
 axum = "0.7"
 tower-http = { version = "0.5", features = ["fs", "cors", "trace"] }

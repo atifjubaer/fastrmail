@@ -1,4 +1,4 @@
-//! FastrMail Binary — Entry point that wires together SMTP, HTTP API, and storage.
+//! FastrMail Binary — Entry point that wires together SMTP, HTTP API, storage, and outbound delivery.
 
 use std::sync::Arc;
 
@@ -12,7 +12,8 @@ use tower_http::trace::TraceLayer;
 use tracing::info;
 use uuid::Uuid;
 
-use fastrmail_smtp::SmtpServer;
+use fastrmail_auth::DkimSigner;
+use fastrmail_smtp::{OutboundEngine, SmtpServer};
 use fastrmail_store::Database;
 
 /// Shared application state passed to all HTTP handlers.
@@ -164,15 +165,13 @@ async fn send_email(
     }))
 }
 
-/// GET /api/v1/mailbox — Returns all messages (for demo purposes, returns all messages for a default account).
+/// GET /api/v1/mailbox — Returns all messages for the default account.
 async fn get_mailbox(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<Vec<MessageResponse>>, (StatusCode, Json<ErrorResponse>)> {
-    // For Phase 1, return all messages for the default account
     let account = match state.db.get_account_by_email("postmaster@localhost") {
         Ok(Some(a)) => a,
         Ok(None) => {
-            // No messages yet
             return Ok(Json(Vec::new()));
         }
         Err(e) => {
@@ -224,8 +223,45 @@ fn build_router(state: Arc<AppState>) -> Router {
         .with_state(state)
 }
 
+/// Generate a DKIM key pair, record it in the database, and return the formatted DNS TXT record.
+pub fn handle_generate_dkim(db: &Database, domain: &str) -> anyhow::Result<String> {
+    let tenant_id = match db.get_tenant_by_domain(domain)? {
+        Some(t) => t.id,
+        None => db.insert_tenant(domain)?,
+    };
+
+    let key_pair = DkimSigner::generate_key_pair()?;
+    let selector = "default";
+    db.insert_dkim_key(&tenant_id, selector, &key_pair.private_key_pem)?;
+
+    let record = format!(
+        "{}._domainkey.{} TXT v=DKIM1; k=rsa; p={}",
+        selector, domain, key_pair.public_key_base64
+    );
+    Ok(record)
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let args: Vec<String> = std::env::args().collect();
+
+    // Check for CLI argument: fastrmail --generate-dkim <domain>
+    if let Some(pos) = args.iter().position(|arg| arg == "--generate-dkim") {
+        let domain = args
+            .get(pos + 1)
+            .map(|s| s.as_str())
+            .unwrap_or("example.com");
+
+        let db = Database::new("data/fastrmail.db")?;
+        db.init_schema()?;
+
+        let record = handle_generate_dkim(&db, domain)?;
+
+        println!("Add this TXT record to your DNS:");
+        println!("{record}");
+        return Ok(());
+    }
+
     // Initialize tracing
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -249,7 +285,7 @@ async fn main() -> anyhow::Result<()> {
 
     let db = Arc::new(db);
 
-    // Spawn SMTP server
+    // Spawn SMTP inbound listener
     let smtp_db = Arc::clone(&db);
     let smtp_server = SmtpServer::new(smtp_db, "data".to_string());
     tokio::spawn(async move {
@@ -258,6 +294,13 @@ async fn main() -> anyhow::Result<()> {
         }
     });
     info!("SMTP listening on :2525");
+
+    // Spawn Outbound SMTP Delivery Worker
+    let outbound_db = Arc::clone(&db);
+    let outbound_engine = Arc::new(OutboundEngine::new(outbound_db, "data".to_string()));
+    let (_shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
+    outbound_engine.start(shutdown_rx);
+    info!("Outbound SMTP delivery worker running");
 
     // Start HTTP API server
     let state = Arc::new(AppState { db });
@@ -320,5 +363,20 @@ mod tests {
         let state = setup_test_state();
         let res = get_mailbox(State(state)).await.unwrap();
         assert!(res.0.is_empty());
+    }
+
+    #[test]
+    fn test_cli_generate_dkim() {
+        let db = Database::new_memory().unwrap();
+        db.init_schema().unwrap();
+
+        let record = handle_generate_dkim(&db, "test.com").unwrap();
+        assert!(record.starts_with("default._domainkey.test.com TXT v=DKIM1; k=rsa; p="));
+
+        // Verify saved to database
+        let tenant = db.get_tenant_by_domain("test.com").unwrap().unwrap();
+        let active_key = db.get_active_dkim_key(&tenant.id).unwrap().unwrap();
+        assert_eq!(active_key.selector, "default");
+        assert!(active_key.is_active);
     }
 }
