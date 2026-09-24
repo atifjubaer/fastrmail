@@ -110,10 +110,21 @@ impl Database {
                 retry_count INTEGER DEFAULT 0
             );
 
-            -- Performance Indexes for IMAP & Outbound Queue
+            CREATE TABLE IF NOT EXISTS greylist (
+                id TEXT PRIMARY KEY,
+                sender_ip TEXT NOT NULL,
+                sender TEXT NOT NULL,
+                recipient TEXT NOT NULL,
+                first_seen DATETIME NOT NULL,
+                passed BOOLEAN DEFAULT 0,
+                UNIQUE(sender_ip, sender, recipient)
+            );
+
+            -- Performance Indexes for IMAP, Outbound Queue & Greylist
             CREATE INDEX IF NOT EXISTS idx_messages_account ON messages(account_id);
             CREATE INDEX IF NOT EXISTS idx_messages_mailbox ON messages(mailbox_id, uid);
             CREATE INDEX IF NOT EXISTS idx_smtp_queue_status ON smtp_queue(status);
+            CREATE INDEX IF NOT EXISTS idx_greylist_lookup ON greylist(sender_ip, sender, recipient);
             ",
         )
         .context("Failed to initialize database schema")?;
@@ -785,6 +796,90 @@ impl Database {
         })
     }
 
+    // ─── Greylist Operations (Spam Guard) ────────────────────
+
+    /// Check greylist status for a given (sender_ip, sender, recipient) tuple.
+    ///
+    /// - If no record exists: inserts a new record with first_seen = now(), passed = 0, and returns Ok(false).
+    /// - If a record exists and passed is already true: returns Ok(true).
+    /// - If a record exists and first_seen was >= window_seconds ago (default 300s = 5m):
+    ///   updates passed = 1 and returns Ok(true).
+    /// - If a record exists but first_seen was < window_seconds ago: returns Ok(false).
+    pub fn check_greylist(&self, ip: &str, sender: &str, recipient: &str) -> Result<bool> {
+        self.check_greylist_with_window(ip, sender, recipient, 300)
+    }
+
+    /// Check greylist status with a custom delay window (in seconds).
+    pub fn check_greylist_with_window(
+        &self,
+        ip: &str,
+        sender: &str,
+        recipient: &str,
+        window_seconds: i64,
+    ) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let query_res = conn.query_row(
+            "SELECT id, first_seen, passed FROM greylist WHERE sender_ip = ?1 AND sender = ?2 AND recipient = ?3",
+            params![ip, sender, recipient],
+            |row| {
+                let id: String = row.get(0)?;
+                let first_seen_str: String = row.get(1)?;
+                let passed: bool = row.get(2)?;
+                Ok((id, first_seen_str, passed))
+            },
+        );
+
+        match query_res {
+            Ok((id, first_seen_str, passed)) => {
+                if passed {
+                    return Ok(true);
+                }
+                let first_seen = chrono::NaiveDateTime::parse_from_str(&first_seen_str, "%Y-%m-%d %H:%M:%S")
+                    .map(|ndt| ndt.and_utc())
+                    .unwrap_or_else(|_| Utc::now());
+
+                let elapsed_secs = (Utc::now() - first_seen).num_seconds();
+                if elapsed_secs >= window_seconds {
+                    conn.execute("UPDATE greylist SET passed = 1 WHERE id = ?1", params![id])?;
+                    Ok(true)
+                } else {
+                    Ok(false)
+                }
+            }
+            Err(rusqlite::Error::QueryReturnedNoRows) => {
+                let id = Uuid::new_v4().to_string();
+                let now = Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+                conn.execute(
+                    "INSERT INTO greylist (id, sender_ip, sender, recipient, first_seen, passed) VALUES (?1, ?2, ?3, ?4, ?5, 0)",
+                    params![id, ip, sender, recipient, now],
+                )?;
+                Ok(false)
+            }
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Insert a greylist record with a specific first_seen time and passed status (useful for seeding and testing).
+    pub fn insert_greylist_record(
+        &self,
+        ip: &str,
+        sender: &str,
+        recipient: &str,
+        first_seen: DateTime<Utc>,
+        passed: bool,
+    ) -> Result<String> {
+        let conn = self.conn.lock().unwrap();
+        let id = Uuid::new_v4().to_string();
+        let fs_str = first_seen.format("%Y-%m-%d %H:%M:%S").to_string();
+        conn.execute(
+            "INSERT INTO greylist (id, sender_ip, sender, recipient, first_seen, passed)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(sender_ip, sender, recipient) DO UPDATE SET first_seen = excluded.first_seen, passed = excluded.passed",
+            params![id, ip, sender, recipient, fs_str, passed],
+        )?;
+        Ok(id)
+    }
+
     // ─── Utility ─────────────────────────────────────────────
 
     /// Check if a specific table exists in the database.
@@ -820,6 +915,7 @@ mod tests {
             "mailboxes",
             "messages",
             "smtp_queue",
+            "greylist",
         ];
         for table in &tables {
             assert!(
@@ -1049,5 +1145,33 @@ mod tests {
         db.delete_account(&a2).unwrap();
         let accounts_after = db.get_accounts_by_tenant(&t1).unwrap();
         assert_eq!(accounts_after.len(), 1);
+    }
+
+    #[test]
+    fn test_greylist_workflow() {
+        let db = setup_db();
+        let ip = "198.51.100.25";
+        let sender = "newsletter@sender.org";
+        let recipient = "alice@fastrmail.com";
+
+        // 1. First attempt: unknown tuple, inserts record and returns false (defer)
+        let first_attempt = db.check_greylist(ip, sender, recipient).unwrap();
+        assert!(!first_attempt, "First greylist check must defer with false");
+
+        // 2. Immediate retry within window: still within 5 min window, returns false
+        let immediate_retry = db.check_greylist(ip, sender, recipient).unwrap();
+        assert!(!immediate_retry, "Immediate retry within window must return false");
+
+        // 3. Fast-forward by testing with a 0-second window or updating first_seen to 6 minutes ago
+        let six_mins_ago = Utc::now() - chrono::Duration::minutes(6);
+        db.insert_greylist_record(ip, sender, recipient, six_mins_ago, false).unwrap();
+
+        // 4. Retry after delay: elapsed time > 5 min, should pass and update passed = true
+        let retry_after_delay = db.check_greylist(ip, sender, recipient).unwrap();
+        assert!(retry_after_delay, "Retry after delay window must return true");
+
+        // 5. Subsequent attempts: already passed, returns true immediately
+        let subsequent = db.check_greylist(ip, sender, recipient).unwrap();
+        assert!(subsequent, "Subsequent checks for passed tuple must return true");
     }
 }
