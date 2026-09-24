@@ -21,8 +21,11 @@ RUN cd web/admin && npm run build
 # ==============================================================================
 FROM rust:1.81-alpine AS backend-builder
 
-# Install required build toolchain including cmake & perl for sys-crates (zstd-sys, lzma-sys, bzip2-sys)
-RUN apk add --no-cache musl-dev sqlite-dev openssl-dev build-base pkgconfig cmake perl
+# Install required build toolchain including cmake, perl, clang, and linux-headers for Tantivy & Tokio sys-crates
+RUN apk add --no-cache musl-dev sqlite-dev openssl-dev build-base pkgconfig cmake perl clang lld linux-headers
+
+# Musl default stack is 80KB; enlarge stack to 16MB to prevent rustc stack overflow on Alpine
+ENV RUST_MIN_STACK=16777216
 
 WORKDIR /app
 
