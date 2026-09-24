@@ -18,7 +18,8 @@ services:
       - "${SMTP_SUBMISSION_PORT:-587}:2526"     # SMTP Submission Auth (RFC 6409)
       - "${IMAP_PORT:-143}:1143"                # IMAP4rev2 (RFC 9051)
       - "${POP3_PORT:-110}:1110"                # POP3 (RFC 1939)
-      - "${HTTP_PORT:-8088}:8080"               # HTTP — Webmail, Admin, REST API, JMAP (8088 avoids host 8080 conflict)
+    expose:
+      - "8080"
 
     # ── Environment Variables (Dokploy auto-fills from UI) ───────────────────
     environment:
