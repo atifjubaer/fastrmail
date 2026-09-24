@@ -8,6 +8,12 @@ description = "DKIM/SPF/DMARC/ARC + User Auth (JWT/OAuth) for FastrMail"
 
 [dependencies]
 fastrmail-core = { path = "../fastrmail-core" }
+mail-auth = { version = "0.4", features = ["generate"] }
+mail-parser = "0.9"
+mail-builder = "0.3"
+hickory-resolver = "0.24"
+tokio = { version = "1", features = ["full"] }
+argon2 = "0.5"
 serde = { version = "1", features = ["derive"] }
 anyhow = "1"
 tracing = "0.1"
