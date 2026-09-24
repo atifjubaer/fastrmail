@@ -9,6 +9,13 @@ description = "IMAP4rev2 server for FastrMail"
 [dependencies]
 fastrmail-core = { path = "../fastrmail-core" }
 fastrmail-store = { path = "../fastrmail-store" }
+fastrmail-auth = { path = "../fastrmail-auth" }
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
 anyhow = "1"
+imap-proto = "0.16"
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+mail-parser = "0.9"
+base64 = "0.22"
+serde_json = "1"

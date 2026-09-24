@@ -11,7 +11,7 @@ use rusqlite::{params, Connection};
 use uuid::Uuid;
 
 use fastrmail_auth::{hash_password, verify_password};
-use fastrmail_core::{Account, DkimKey, Mailbox, Message, QueueItem, Tenant};
+use fastrmail_core::{Account, DkimKey, Mailbox, Message, QueueItem, SystemStats, Tenant};
 
 /// Main database handle wrapping a SQLite connection in a Mutex for thread safety.
 pub struct Database {
@@ -261,6 +261,69 @@ impl Database {
         Ok(mailboxes)
     }
 
+    /// Retrieve a mailbox by account ID and folder name (case-insensitive for INBOX).
+    pub fn get_mailbox_by_name(&self, account_id: &str, name: &str) -> Result<Option<Mailbox>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, account_id, name, parent_id, uid_validity, uid_next, modseq FROM mailboxes WHERE account_id = ?1 AND name = ?2 COLLATE NOCASE LIMIT 1",
+        )?;
+        let mut rows = stmt.query_map(params![account_id, name], |row| {
+            Ok(Mailbox {
+                id: row.get(0)?,
+                account_id: row.get(1)?,
+                name: row.get(2)?,
+                parent_id: row.get(3)?,
+                uid_validity: row.get(4)?,
+                uid_next: row.get(5)?,
+                modseq: row.get(6)?,
+            })
+        })?;
+        match rows.next() {
+            Some(Ok(mb)) => Ok(Some(mb)),
+            Some(Err(e)) => Err(e.into()),
+            None => Ok(None),
+        }
+    }
+
+    /// Retrieve a mailbox by its primary key ID.
+    pub fn get_mailbox_by_id(&self, mailbox_id: &str) -> Result<Option<Mailbox>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, account_id, name, parent_id, uid_validity, uid_next, modseq FROM mailboxes WHERE id = ?1",
+        )?;
+        let mut rows = stmt.query_map(params![mailbox_id], |row| {
+            Ok(Mailbox {
+                id: row.get(0)?,
+                account_id: row.get(1)?,
+                name: row.get(2)?,
+                parent_id: row.get(3)?,
+                uid_validity: row.get(4)?,
+                uid_next: row.get(5)?,
+                modseq: row.get(6)?,
+            })
+        })?;
+        match rows.next() {
+            Some(Ok(mb)) => Ok(Some(mb)),
+            Some(Err(e)) => Err(e.into()),
+            None => Ok(None),
+        }
+    }
+
+    /// Delete a mailbox and its messages.
+    pub fn delete_mailbox(&self, mailbox_id: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM messages WHERE mailbox_id = ?1", params![mailbox_id])?;
+        conn.execute("DELETE FROM mailboxes WHERE id = ?1", params![mailbox_id])?;
+        Ok(())
+    }
+
+    /// Rename an existing mailbox.
+    pub fn rename_mailbox(&self, mailbox_id: &str, new_name: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("UPDATE mailboxes SET name = ?1 WHERE id = ?2", params![new_name, mailbox_id])?;
+        Ok(())
+    }
+
     // ─── Message CRUD ────────────────────────────────────────
 
     /// Insert a new message. Automatically assigns UID and modseq in a single combined query.
@@ -367,6 +430,139 @@ impl Database {
             messages.push(row?);
         }
         Ok(messages)
+    }
+
+    /// Retrieve a single message by mailbox ID and UID.
+    pub fn get_message_by_uid(&self, mailbox_id: &str, uid: i64) -> Result<Option<Message>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, mailbox_id, account_id, uid, modseq, blob_id, size_bytes, parsed_subject, parsed_from, parsed_to, internal_date, flags FROM messages WHERE mailbox_id = ?1 AND uid = ?2",
+        )?;
+        let mut rows = stmt.query_map(params![mailbox_id, uid], |row| {
+            Ok(Message {
+                id: row.get(0)?,
+                mailbox_id: row.get(1)?,
+                account_id: row.get(2)?,
+                uid: row.get(3)?,
+                modseq: row.get(4)?,
+                blob_id: row.get(5)?,
+                size_bytes: row.get(6)?,
+                parsed_subject: row.get(7)?,
+                parsed_from: row.get(8)?,
+                parsed_to: row.get(9)?,
+                internal_date: row.get::<_, String>(10).map(|s| {
+                    chrono::NaiveDateTime::parse_from_str(&s, "%Y-%m-%d %H:%M:%S")
+                        .map(|ndt| ndt.and_utc())
+                        .unwrap_or_else(|_| Utc::now())
+                })?,
+                flags: row
+                    .get::<_, Option<String>>(11)?
+                    .unwrap_or_else(|| "[]".to_string()),
+            })
+        })?;
+        match rows.next() {
+            Some(Ok(msg)) => Ok(Some(msg)),
+            Some(Err(e)) => Err(e.into()),
+            None => Ok(None),
+        }
+    }
+
+    /// Retrieve messages within a UID range [min_uid, max_uid] for a mailbox.
+    pub fn get_messages_by_uid_range(
+        &self,
+        mailbox_id: &str,
+        min_uid: i64,
+        max_uid: i64,
+    ) -> Result<Vec<Message>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, mailbox_id, account_id, uid, modseq, blob_id, size_bytes, parsed_subject, parsed_from, parsed_to, internal_date, flags FROM messages WHERE mailbox_id = ?1 AND uid >= ?2 AND uid <= ?3 ORDER BY uid ASC",
+        )?;
+        let rows = stmt.query_map(params![mailbox_id, min_uid, max_uid], |row| {
+            Ok(Message {
+                id: row.get(0)?,
+                mailbox_id: row.get(1)?,
+                account_id: row.get(2)?,
+                uid: row.get(3)?,
+                modseq: row.get(4)?,
+                blob_id: row.get(5)?,
+                size_bytes: row.get(6)?,
+                parsed_subject: row.get(7)?,
+                parsed_from: row.get(8)?,
+                parsed_to: row.get(9)?,
+                internal_date: row.get::<_, String>(10).map(|s| {
+                    chrono::NaiveDateTime::parse_from_str(&s, "%Y-%m-%d %H:%M:%S")
+                        .map(|ndt| ndt.and_utc())
+                        .unwrap_or_else(|_| Utc::now())
+                })?,
+                flags: row
+                    .get::<_, Option<String>>(11)?
+                    .unwrap_or_else(|| "[]".to_string()),
+            })
+        })?;
+        let mut messages = Vec::new();
+        for row in rows {
+            messages.push(row?);
+        }
+        Ok(messages)
+    }
+
+    /// Update flags for a specific message by mailbox ID and UID, advancing the mailbox modseq.
+    pub fn update_message_flags(&self, mailbox_id: &str, uid: i64, flags: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let next_modseq: i64 = conn.query_row(
+            "SELECT modseq FROM mailboxes WHERE id = ?1",
+            params![mailbox_id],
+            |row| row.get(0),
+        )?;
+        conn.execute(
+            "UPDATE messages SET flags = ?1, modseq = ?2 WHERE mailbox_id = ?3 AND uid = ?4",
+            params![flags, next_modseq, mailbox_id, uid],
+        )?;
+        conn.execute(
+            "UPDATE mailboxes SET modseq = modseq + 1 WHERE id = ?1",
+            params![mailbox_id],
+        )?;
+        Ok(())
+    }
+
+    /// Expunge (delete) all messages in a mailbox marked with \\Deleted flag.
+    /// Returns a list of (uid, blob_id) for physical blob cleanup.
+    pub fn expunge_deleted_messages(&self, mailbox_id: &str) -> Result<Vec<(i64, String)>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT uid, blob_id FROM messages WHERE mailbox_id = ?1 AND (flags LIKE '%\\Deleted%' OR flags LIKE '%Deleted%') ORDER BY uid ASC",
+        )?;
+        let rows = stmt.query_map(params![mailbox_id], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })?;
+        let mut deleted = Vec::new();
+        for row in rows {
+            deleted.push(row?);
+        }
+
+        conn.execute(
+            "DELETE FROM messages WHERE mailbox_id = ?1 AND (flags LIKE '%\\Deleted%' OR flags LIKE '%Deleted%')",
+            params![mailbox_id],
+        )?;
+
+        Ok(deleted)
+    }
+
+    /// Get total message count and unseen message count for a mailbox.
+    pub fn get_mailbox_counts(&self, mailbox_id: &str) -> Result<(i64, i64)> {
+        let conn = self.conn.lock().unwrap();
+        let total: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM messages WHERE mailbox_id = ?1",
+            params![mailbox_id],
+            |row| row.get(0),
+        )?;
+        let unseen: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM messages WHERE mailbox_id = ?1 AND (flags NOT LIKE '%\\Seen%' AND flags NOT LIKE '%Seen%')",
+            params![mailbox_id],
+            |row| row.get(0),
+        )?;
+        Ok((total, unseen))
     }
 
     // ─── SMTP Queue CRUD ─────────────────────────────────────
@@ -507,6 +703,86 @@ impl Database {
             keys.push(row?);
         }
         Ok(keys)
+    }
+
+    // ─── Admin & Stats ───────────────────────────────────────
+
+    /// List all tenants registered in the system.
+    pub fn list_all_tenants(&self) -> Result<Vec<Tenant>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT id, domain, created_at FROM tenants ORDER BY created_at DESC")?;
+        let rows = stmt.query_map([], |row| {
+            Ok(Tenant {
+                id: row.get(0)?,
+                domain: row.get(1)?,
+                created_at: row.get::<_, String>(2).map(|s| {
+                    chrono::NaiveDateTime::parse_from_str(&s, "%Y-%m-%d %H:%M:%S")
+                        .map(|ndt| ndt.and_utc())
+                        .unwrap_or_else(|_| Utc::now())
+                })?,
+            })
+        })?;
+        let mut tenants = Vec::new();
+        for row in rows {
+            tenants.push(row?);
+        }
+        Ok(tenants)
+    }
+
+    /// List all accounts belonging to a specific tenant.
+    pub fn get_accounts_by_tenant(&self, tenant_id: &str) -> Result<Vec<Account>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, tenant_id, username, email, password_hash, quota_bytes, created_at FROM accounts WHERE tenant_id = ?1 ORDER BY created_at DESC",
+        )?;
+        let rows = stmt.query_map(params![tenant_id], |row| {
+            Ok(Account {
+                id: row.get(0)?,
+                tenant_id: row.get(1)?,
+                username: row.get(2)?,
+                email: row.get(3)?,
+                password_hash: row.get(4)?,
+                quota_bytes: row.get(5)?,
+                created_at: row.get::<_, String>(6).map(|s| {
+                    chrono::NaiveDateTime::parse_from_str(&s, "%Y-%m-%d %H:%M:%S")
+                        .map(|ndt| ndt.and_utc())
+                        .unwrap_or_else(|_| Utc::now())
+                })?,
+            })
+        })?;
+        let mut accounts = Vec::new();
+        for row in rows {
+            accounts.push(row?);
+        }
+        Ok(accounts)
+    }
+
+    /// Delete an account and all of its associated mailboxes and messages.
+    pub fn delete_account(&self, account_id: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM messages WHERE account_id = ?1", params![account_id])?;
+        conn.execute("DELETE FROM mailboxes WHERE account_id = ?1", params![account_id])?;
+        conn.execute("DELETE FROM accounts WHERE id = ?1", params![account_id])?;
+        Ok(())
+    }
+
+    /// Retrieve global statistics for the admin dashboard.
+    pub fn get_system_stats(&self) -> Result<SystemStats> {
+        let conn = self.conn.lock().unwrap();
+        let tenants_count: i64 = conn.query_row("SELECT COUNT(*) FROM tenants", [], |r| r.get(0))?;
+        let accounts_count: i64 = conn.query_row("SELECT COUNT(*) FROM accounts", [], |r| r.get(0))?;
+        let messages_count: i64 = conn.query_row("SELECT COUNT(*) FROM messages", [], |r| r.get(0))?;
+        let queue_pending_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM smtp_queue WHERE status = 'pending' OR status = 'retrying'",
+            [],
+            |r| r.get(0),
+        )?;
+        Ok(SystemStats {
+            tenants_count,
+            accounts_count,
+            messages_count,
+            queue_pending_count,
+        })
     }
 
     // ─── Utility ─────────────────────────────────────────────
@@ -681,5 +957,97 @@ mod tests {
         let active_key = db.get_active_dkim_key(&tenant_id).unwrap().unwrap();
         assert_eq!(active_key.selector, "default");
         assert!(active_key.is_active);
+    }
+
+    #[test]
+    fn test_mailbox_and_message_operations() {
+        let db = setup_db();
+        let tenant_id = db.insert_tenant("store-test.com").unwrap();
+        let account_id = db
+            .insert_account(&tenant_id, "carol", "carol@store-test.com", "pass")
+            .unwrap();
+
+        // Test insert and get_mailbox_by_name
+        let mb_id = db.insert_mailbox(&account_id, "INBOX").unwrap();
+        let mb = db.get_mailbox_by_name(&account_id, "inbox").unwrap().unwrap();
+        assert_eq!(mb.id, mb_id);
+        assert_eq!(mb.name, "INBOX");
+
+        // Test rename_mailbox
+        db.rename_mailbox(&mb_id, "Archived").unwrap();
+        let renamed = db.get_mailbox_by_id(&mb_id).unwrap().unwrap();
+        assert_eq!(renamed.name, "Archived");
+
+        // Add 3 messages
+        let _m1 = db.insert_message(&mb_id, &account_id, "blob_1", 100, Some("Sub 1"), None, None).unwrap();
+        let _m2 = db.insert_message(&mb_id, &account_id, "blob_2", 200, Some("Sub 2"), None, None).unwrap();
+        let _m3 = db.insert_message(&mb_id, &account_id, "blob_3", 300, Some("Sub 3"), None, None).unwrap();
+
+        // Check counts
+        let (total, unseen) = db.get_mailbox_counts(&mb_id).unwrap();
+        assert_eq!(total, 3);
+        assert_eq!(unseen, 3);
+
+        // Update flags for msg 1 (UID 1) to Seen
+        db.update_message_flags(&mb_id, 1, r#"["\\Seen"]"#).unwrap();
+        let (total_after, unseen_after) = db.get_mailbox_counts(&mb_id).unwrap();
+        assert_eq!(total_after, 3);
+        assert_eq!(unseen_after, 2);
+
+        // Check get_message_by_uid
+        let fetched_m1 = db.get_message_by_uid(&mb_id, 1).unwrap().unwrap();
+        assert_eq!(fetched_m1.uid, 1);
+        assert!(fetched_m1.flags.contains("Seen"));
+
+        // Check get_messages_by_uid_range
+        let range = db.get_messages_by_uid_range(&mb_id, 2, 3).unwrap();
+        assert_eq!(range.len(), 2);
+        assert_eq!(range[0].uid, 2);
+        assert_eq!(range[1].uid, 3);
+
+        // Mark msg 2 as Deleted
+        db.update_message_flags(&mb_id, 2, r#"["\\Deleted"]"#).unwrap();
+        let expunged = db.expunge_deleted_messages(&mb_id).unwrap();
+        assert_eq!(expunged.len(), 1);
+        assert_eq!(expunged[0].0, 2);
+        assert_eq!(expunged[0].1, "blob_2");
+
+        let (total_final, _) = db.get_mailbox_counts(&mb_id).unwrap();
+        assert_eq!(total_final, 2);
+
+        // Test delete_mailbox
+        db.delete_mailbox(&mb_id).unwrap();
+        assert!(db.get_mailbox_by_id(&mb_id).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_admin_and_stats() {
+        let db = setup_db();
+        let t1 = db.insert_tenant("tenant1.com").unwrap();
+        let _t2 = db.insert_tenant("tenant2.com").unwrap();
+
+        let a1 = db.insert_account(&t1, "user1", "user1@tenant1.com", "pass").unwrap();
+        let a2 = db.insert_account(&t1, "user2", "user2@tenant1.com", "pass").unwrap();
+
+        let mb = db.insert_mailbox(&a1, "INBOX").unwrap();
+        db.insert_message(&mb, &a1, "blob1", 100, Some("Hi"), None, None).unwrap();
+        db.queue_email(&t1, "blob1", "user1@tenant1.com", "ext@test.com").unwrap();
+
+        let tenants = db.list_all_tenants().unwrap();
+        assert_eq!(tenants.len(), 2);
+
+        let accounts = db.get_accounts_by_tenant(&t1).unwrap();
+        assert_eq!(accounts.len(), 2);
+
+        let stats = db.get_system_stats().unwrap();
+        assert_eq!(stats.tenants_count, 2);
+        assert_eq!(stats.accounts_count, 2);
+        assert_eq!(stats.messages_count, 1);
+        assert_eq!(stats.queue_pending_count, 1);
+
+        // Delete account
+        db.delete_account(&a2).unwrap();
+        let accounts_after = db.get_accounts_by_tenant(&t1).unwrap();
+        assert_eq!(accounts_after.len(), 1);
     }
 }

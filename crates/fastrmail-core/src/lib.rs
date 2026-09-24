@@ -75,6 +75,15 @@ pub struct DkimKey {
     pub is_active: bool,
 }
 
+/// Global statistics for administrative dashboard.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SystemStats {
+    pub tenants_count: i64,
+    pub accounts_count: i64,
+    pub messages_count: i64,
+    pub queue_pending_count: i64,
+}
+
 /// Global server configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
