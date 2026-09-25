@@ -12,7 +12,8 @@ use uuid::Uuid;
 
 use fastrmail_auth::{hash_password, verify_password};
 use fastrmail_core::{
-    Account, DkimKey, Mailbox, Message, QueueItem, SieveRule, SieveScript, SystemStats, Tenant,
+    Account, AddressBook, Calendar, CalendarEvent, CardDavContact, DkimKey, Mailbox, Message,
+    QueueItem, SieveRule, SieveScript, SystemStats, Tenant, Webhook,
 };
 
 /// Main database handle wrapping a SQLite connection in a Mutex for thread safety.
@@ -131,12 +132,71 @@ impl Database {
                 FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
             );
 
-            -- Performance Indexes for IMAP, Outbound Queue, Greylist & Sieve
+            CREATE TABLE IF NOT EXISTS calendars (
+                id TEXT PRIMARY KEY,
+                account_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                description TEXT,
+                color TEXT DEFAULT '#3b82f6',
+                ctag TEXT NOT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS calendar_events (
+                id TEXT PRIMARY KEY,
+                calendar_id TEXT NOT NULL,
+                uid TEXT NOT NULL,
+                ical_data TEXT NOT NULL,
+                etag TEXT NOT NULL,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (calendar_id) REFERENCES calendars(id) ON DELETE CASCADE,
+                UNIQUE(calendar_id, uid)
+            );
+
+            CREATE TABLE IF NOT EXISTS address_books (
+                id TEXT PRIMARY KEY,
+                account_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                description TEXT,
+                ctag TEXT NOT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS contacts (
+                id TEXT PRIMARY KEY,
+                address_book_id TEXT NOT NULL,
+                uid TEXT NOT NULL,
+                vcard_data TEXT NOT NULL,
+                etag TEXT NOT NULL,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (address_book_id) REFERENCES address_books(id) ON DELETE CASCADE,
+                UNIQUE(address_book_id, uid)
+            );
+
+            CREATE TABLE IF NOT EXISTS webhooks (
+                id TEXT PRIMARY KEY,
+                account_id TEXT NOT NULL,
+                url TEXT NOT NULL,
+                secret TEXT,
+                event_types TEXT NOT NULL,
+                is_active BOOLEAN DEFAULT 1,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
+            );
+
+            -- Performance Indexes for IMAP, Outbound Queue, Greylist, Sieve, CalDAV, CardDAV & Webhooks
             CREATE INDEX IF NOT EXISTS idx_messages_account ON messages(account_id);
             CREATE INDEX IF NOT EXISTS idx_messages_mailbox ON messages(mailbox_id, uid);
             CREATE INDEX IF NOT EXISTS idx_smtp_queue_status ON smtp_queue(status);
             CREATE INDEX IF NOT EXISTS idx_greylist_lookup ON greylist(sender_ip, sender, recipient);
             CREATE INDEX IF NOT EXISTS idx_sieve_account ON sieve_scripts(account_id);
+            CREATE INDEX IF NOT EXISTS idx_calendars_account ON calendars(account_id);
+            CREATE INDEX IF NOT EXISTS idx_calendar_events_calendar ON calendar_events(calendar_id);
+            CREATE INDEX IF NOT EXISTS idx_address_books_account ON address_books(account_id);
+            CREATE INDEX IF NOT EXISTS idx_contacts_address_book ON contacts(address_book_id);
+            CREATE INDEX IF NOT EXISTS idx_webhooks_account ON webhooks(account_id);
             ",
         )
         .context("Failed to initialize database schema")?;
@@ -987,6 +1047,497 @@ impl Database {
         Ok(())
     }
 
+    // ─── CalDAV CRUD ─────────────────────────────────────────
+
+    /// Retrieve or automatically create the default personal calendar for an account.
+    pub fn get_or_create_default_calendar(&self, account_id: &str) -> Result<Calendar> {
+        let calendars = self.get_calendars(account_id)?;
+        if let Some(cal) = calendars.into_iter().next() {
+            Ok(cal)
+        } else {
+            self.insert_calendar(account_id, "Personal", Some("Default Calendar"), "#3b82f6")
+        }
+    }
+
+    /// Retrieve all calendars for an account.
+    pub fn get_calendars(&self, account_id: &str) -> Result<Vec<Calendar>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, account_id, name, description, color, ctag, created_at FROM calendars WHERE account_id = ?1 ORDER BY created_at ASC",
+        )?;
+        let rows = stmt.query_map(params![account_id], |row| {
+            let created_at: String = row.get(6)?;
+            let parsed_dt = chrono::NaiveDateTime::parse_from_str(&created_at, "%Y-%m-%d %H:%M:%S")
+                .map(|ndt| ndt.and_utc())
+                .unwrap_or_else(|_| Utc::now());
+            Ok(Calendar {
+                id: row.get(0)?,
+                account_id: row.get(1)?,
+                name: row.get(2)?,
+                description: row.get(3)?,
+                color: row.get(4)?,
+                ctag: row.get(5)?,
+                created_at: parsed_dt,
+            })
+        })?;
+        let mut result = Vec::new();
+        for r in rows {
+            result.push(r?);
+        }
+        Ok(result)
+    }
+
+    /// Retrieve a single calendar by its ID.
+    pub fn get_calendar_by_id(&self, calendar_id: &str) -> Result<Option<Calendar>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, account_id, name, description, color, ctag, created_at FROM calendars WHERE id = ?1",
+        )?;
+        let mut rows = stmt.query_map(params![calendar_id], |row| {
+            let created_at: String = row.get(6)?;
+            let parsed_dt = chrono::NaiveDateTime::parse_from_str(&created_at, "%Y-%m-%d %H:%M:%S")
+                .map(|ndt| ndt.and_utc())
+                .unwrap_or_else(|_| Utc::now());
+            Ok(Calendar {
+                id: row.get(0)?,
+                account_id: row.get(1)?,
+                name: row.get(2)?,
+                description: row.get(3)?,
+                color: row.get(4)?,
+                ctag: row.get(5)?,
+                created_at: parsed_dt,
+            })
+        })?;
+        match rows.next() {
+            Some(Ok(c)) => Ok(Some(c)),
+            Some(Err(e)) => Err(e.into()),
+            None => Ok(None),
+        }
+    }
+
+    /// Insert a new calendar for an account.
+    pub fn insert_calendar(
+        &self,
+        account_id: &str,
+        name: &str,
+        description: Option<&str>,
+        color: &str,
+    ) -> Result<Calendar> {
+        let conn = self.conn.lock().unwrap();
+        let id = Uuid::new_v4().to_string();
+        let ctag = Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT INTO calendars (id, account_id, name, description, color, ctag) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![id, account_id, name, description, color, ctag],
+        )?;
+        Ok(Calendar {
+            id,
+            account_id: account_id.to_string(),
+            name: name.to_string(),
+            description: description.map(|s| s.to_string()),
+            color: color.to_string(),
+            ctag,
+            created_at: Utc::now(),
+        })
+    }
+
+    /// Retrieve all calendar events for a given calendar.
+    pub fn get_calendar_events(&self, calendar_id: &str) -> Result<Vec<CalendarEvent>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, calendar_id, uid, ical_data, etag, updated_at FROM calendar_events WHERE calendar_id = ?1",
+        )?;
+        let rows = stmt.query_map(params![calendar_id], |row| {
+            let updated_at: String = row.get(5)?;
+            let parsed_dt = chrono::NaiveDateTime::parse_from_str(&updated_at, "%Y-%m-%d %H:%M:%S")
+                .map(|ndt| ndt.and_utc())
+                .unwrap_or_else(|_| Utc::now());
+            Ok(CalendarEvent {
+                id: row.get(0)?,
+                calendar_id: row.get(1)?,
+                uid: row.get(2)?,
+                ical_data: row.get(3)?,
+                etag: row.get(4)?,
+                updated_at: parsed_dt,
+            })
+        })?;
+        let mut events = Vec::new();
+        for r in rows {
+            events.push(r?);
+        }
+        Ok(events)
+    }
+
+    /// Retrieve a calendar event by its UID.
+    pub fn get_calendar_event_by_uid(
+        &self,
+        calendar_id: &str,
+        uid: &str,
+    ) -> Result<Option<CalendarEvent>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, calendar_id, uid, ical_data, etag, updated_at FROM calendar_events WHERE calendar_id = ?1 AND uid = ?2",
+        )?;
+        let mut rows = stmt.query_map(params![calendar_id, uid], |row| {
+            let updated_at: String = row.get(5)?;
+            let parsed_dt = chrono::NaiveDateTime::parse_from_str(&updated_at, "%Y-%m-%d %H:%M:%S")
+                .map(|ndt| ndt.and_utc())
+                .unwrap_or_else(|_| Utc::now());
+            Ok(CalendarEvent {
+                id: row.get(0)?,
+                calendar_id: row.get(1)?,
+                uid: row.get(2)?,
+                ical_data: row.get(3)?,
+                etag: row.get(4)?,
+                updated_at: parsed_dt,
+            })
+        })?;
+        match rows.next() {
+            Some(Ok(ev)) => Ok(Some(ev)),
+            Some(Err(e)) => Err(e.into()),
+            None => Ok(None),
+        }
+    }
+
+    /// Insert or update an iCalendar event within a calendar, bumping calendar ctag.
+    pub fn put_calendar_event(
+        &self,
+        calendar_id: &str,
+        uid: &str,
+        ical_data: &str,
+    ) -> Result<CalendarEvent> {
+        let conn = self.conn.lock().unwrap();
+        let event_id = Uuid::new_v4().to_string();
+        let etag = format!("\"{}\"", Uuid::new_v4().simple());
+        let new_ctag = Uuid::new_v4().to_string();
+
+        conn.execute(
+            "INSERT INTO calendar_events (id, calendar_id, uid, ical_data, etag, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, CURRENT_TIMESTAMP)
+             ON CONFLICT(calendar_id, uid) DO UPDATE SET
+                ical_data = excluded.ical_data,
+                etag = excluded.etag,
+                updated_at = CURRENT_TIMESTAMP",
+            params![event_id, calendar_id, uid, ical_data, etag],
+        )?;
+
+        conn.execute(
+            "UPDATE calendars SET ctag = ?1 WHERE id = ?2",
+            params![new_ctag, calendar_id],
+        )?;
+
+        Ok(CalendarEvent {
+            id: event_id,
+            calendar_id: calendar_id.to_string(),
+            uid: uid.to_string(),
+            ical_data: ical_data.to_string(),
+            etag,
+            updated_at: Utc::now(),
+        })
+    }
+
+    /// Delete a calendar event by UID and bump calendar ctag.
+    pub fn delete_calendar_event(&self, calendar_id: &str, uid: &str) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let affected = conn.execute(
+            "DELETE FROM calendar_events WHERE calendar_id = ?1 AND uid = ?2",
+            params![calendar_id, uid],
+        )?;
+        if affected > 0 {
+            let new_ctag = Uuid::new_v4().to_string();
+            conn.execute(
+                "UPDATE calendars SET ctag = ?1 WHERE id = ?2",
+                params![new_ctag, calendar_id],
+            )?;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    // ─── CardDAV CRUD ────────────────────────────────────────
+
+    /// Retrieve or automatically create the default personal address book for an account.
+    pub fn get_or_create_default_address_book(&self, account_id: &str) -> Result<AddressBook> {
+        let books = self.get_address_books(account_id)?;
+        if let Some(book) = books.into_iter().next() {
+            Ok(book)
+        } else {
+            self.insert_address_book(account_id, "Contacts", Some("Default Address Book"))
+        }
+    }
+
+    /// Retrieve all address books for an account.
+    pub fn get_address_books(&self, account_id: &str) -> Result<Vec<AddressBook>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, account_id, name, description, ctag, created_at FROM address_books WHERE account_id = ?1 ORDER BY created_at ASC",
+        )?;
+        let rows = stmt.query_map(params![account_id], |row| {
+            let created_at: String = row.get(5)?;
+            let parsed_dt = chrono::NaiveDateTime::parse_from_str(&created_at, "%Y-%m-%d %H:%M:%S")
+                .map(|ndt| ndt.and_utc())
+                .unwrap_or_else(|_| Utc::now());
+            Ok(AddressBook {
+                id: row.get(0)?,
+                account_id: row.get(1)?,
+                name: row.get(2)?,
+                description: row.get(3)?,
+                ctag: row.get(4)?,
+                created_at: parsed_dt,
+            })
+        })?;
+        let mut result = Vec::new();
+        for r in rows {
+            result.push(r?);
+        }
+        Ok(result)
+    }
+
+    /// Retrieve a single address book by ID.
+    pub fn get_address_book_by_id(&self, book_id: &str) -> Result<Option<AddressBook>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, account_id, name, description, ctag, created_at FROM address_books WHERE id = ?1",
+        )?;
+        let mut rows = stmt.query_map(params![book_id], |row| {
+            let created_at: String = row.get(5)?;
+            let parsed_dt = chrono::NaiveDateTime::parse_from_str(&created_at, "%Y-%m-%d %H:%M:%S")
+                .map(|ndt| ndt.and_utc())
+                .unwrap_or_else(|_| Utc::now());
+            Ok(AddressBook {
+                id: row.get(0)?,
+                account_id: row.get(1)?,
+                name: row.get(2)?,
+                description: row.get(3)?,
+                ctag: row.get(4)?,
+                created_at: parsed_dt,
+            })
+        })?;
+        match rows.next() {
+            Some(Ok(b)) => Ok(Some(b)),
+            Some(Err(e)) => Err(e.into()),
+            None => Ok(None),
+        }
+    }
+
+    /// Insert a new address book for an account.
+    pub fn insert_address_book(
+        &self,
+        account_id: &str,
+        name: &str,
+        description: Option<&str>,
+    ) -> Result<AddressBook> {
+        let conn = self.conn.lock().unwrap();
+        let id = Uuid::new_v4().to_string();
+        let ctag = Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT INTO address_books (id, account_id, name, description, ctag) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![id, account_id, name, description, ctag],
+        )?;
+        Ok(AddressBook {
+            id,
+            account_id: account_id.to_string(),
+            name: name.to_string(),
+            description: description.map(|s| s.to_string()),
+            ctag,
+            created_at: Utc::now(),
+        })
+    }
+
+    /// Retrieve all contacts in an address book.
+    pub fn get_contacts(&self, address_book_id: &str) -> Result<Vec<CardDavContact>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, address_book_id, uid, vcard_data, etag, updated_at FROM contacts WHERE address_book_id = ?1",
+        )?;
+        let rows = stmt.query_map(params![address_book_id], |row| {
+            let updated_at: String = row.get(5)?;
+            let parsed_dt = chrono::NaiveDateTime::parse_from_str(&updated_at, "%Y-%m-%d %H:%M:%S")
+                .map(|ndt| ndt.and_utc())
+                .unwrap_or_else(|_| Utc::now());
+            Ok(CardDavContact {
+                id: row.get(0)?,
+                address_book_id: row.get(1)?,
+                uid: row.get(2)?,
+                vcard_data: row.get(3)?,
+                etag: row.get(4)?,
+                updated_at: parsed_dt,
+            })
+        })?;
+        let mut contacts = Vec::new();
+        for r in rows {
+            contacts.push(r?);
+        }
+        Ok(contacts)
+    }
+
+    /// Retrieve a contact by UID.
+    pub fn get_contact_by_uid(
+        &self,
+        address_book_id: &str,
+        uid: &str,
+    ) -> Result<Option<CardDavContact>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, address_book_id, uid, vcard_data, etag, updated_at FROM contacts WHERE address_book_id = ?1 AND uid = ?2",
+        )?;
+        let mut rows = stmt.query_map(params![address_book_id, uid], |row| {
+            let updated_at: String = row.get(5)?;
+            let parsed_dt = chrono::NaiveDateTime::parse_from_str(&updated_at, "%Y-%m-%d %H:%M:%S")
+                .map(|ndt| ndt.and_utc())
+                .unwrap_or_else(|_| Utc::now());
+            Ok(CardDavContact {
+                id: row.get(0)?,
+                address_book_id: row.get(1)?,
+                uid: row.get(2)?,
+                vcard_data: row.get(3)?,
+                etag: row.get(4)?,
+                updated_at: parsed_dt,
+            })
+        })?;
+        match rows.next() {
+            Some(Ok(c)) => Ok(Some(c)),
+            Some(Err(e)) => Err(e.into()),
+            None => Ok(None),
+        }
+    }
+
+    /// Insert or update a vCard contact within an address book, bumping ctag.
+    pub fn put_contact(
+        &self,
+        address_book_id: &str,
+        uid: &str,
+        vcard_data: &str,
+    ) -> Result<CardDavContact> {
+        let conn = self.conn.lock().unwrap();
+        let contact_id = Uuid::new_v4().to_string();
+        let etag = format!("\"{}\"", Uuid::new_v4().simple());
+        let new_ctag = Uuid::new_v4().to_string();
+
+        conn.execute(
+            "INSERT INTO contacts (id, address_book_id, uid, vcard_data, etag, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, CURRENT_TIMESTAMP)
+             ON CONFLICT(address_book_id, uid) DO UPDATE SET
+                vcard_data = excluded.vcard_data,
+                etag = excluded.etag,
+                updated_at = CURRENT_TIMESTAMP",
+            params![contact_id, address_book_id, uid, vcard_data, etag],
+        )?;
+
+        conn.execute(
+            "UPDATE address_books SET ctag = ?1 WHERE id = ?2",
+            params![new_ctag, address_book_id],
+        )?;
+
+        Ok(CardDavContact {
+            id: contact_id,
+            address_book_id: address_book_id.to_string(),
+            uid: uid.to_string(),
+            vcard_data: vcard_data.to_string(),
+            etag,
+            updated_at: Utc::now(),
+        })
+    }
+
+    /// Delete a contact by UID and bump address book ctag.
+    pub fn delete_contact(&self, address_book_id: &str, uid: &str) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let affected = conn.execute(
+            "DELETE FROM contacts WHERE address_book_id = ?1 AND uid = ?2",
+            params![address_book_id, uid],
+        )?;
+        if affected > 0 {
+            let new_ctag = Uuid::new_v4().to_string();
+            conn.execute(
+                "UPDATE address_books SET ctag = ?1 WHERE id = ?2",
+                params![new_ctag, address_book_id],
+            )?;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    // ─── Webhooks CRUD ───────────────────────────────────────
+
+    /// Register a new webhook automation trigger.
+    pub fn insert_webhook(
+        &self,
+        account_id: &str,
+        url: &str,
+        secret: Option<&str>,
+        event_types: &str,
+    ) -> Result<String> {
+        let conn = self.conn.lock().unwrap();
+        let id = Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT INTO webhooks (id, account_id, url, secret, event_types, is_active)
+             VALUES (?1, ?2, ?3, ?4, ?5, 1)",
+            params![id, account_id, url, secret, event_types],
+        )?;
+        Ok(id)
+    }
+
+    /// List active webhooks, optionally filtered by account.
+    pub fn list_webhooks(&self, account_id: Option<&str>) -> Result<Vec<Webhook>> {
+        let conn = self.conn.lock().unwrap();
+        let mut webhooks = Vec::new();
+        if let Some(acc_id) = account_id {
+            let mut stmt = conn.prepare(
+                "SELECT id, account_id, url, secret, event_types, is_active, created_at FROM webhooks WHERE account_id = ?1 ORDER BY created_at DESC",
+            )?;
+            let rows = stmt.query_map(params![acc_id], |row| {
+                let created_at: String = row.get(6)?;
+                let parsed_dt = chrono::NaiveDateTime::parse_from_str(&created_at, "%Y-%m-%d %H:%M:%S")
+                    .map(|ndt| ndt.and_utc())
+                    .unwrap_or_else(|_| Utc::now());
+                Ok(Webhook {
+                    id: row.get(0)?,
+                    account_id: row.get(1)?,
+                    url: row.get(2)?,
+                    secret: row.get(3)?,
+                    event_types: row.get(4)?,
+                    is_active: row.get(5)?,
+                    created_at: parsed_dt,
+                })
+            })?;
+            for r in rows {
+                webhooks.push(r?);
+            }
+        } else {
+            let mut stmt = conn.prepare(
+                "SELECT id, account_id, url, secret, event_types, is_active, created_at FROM webhooks ORDER BY created_at DESC",
+            )?;
+            let rows = stmt.query_map([], |row| {
+                let created_at: String = row.get(6)?;
+                let parsed_dt = chrono::NaiveDateTime::parse_from_str(&created_at, "%Y-%m-%d %H:%M:%S")
+                    .map(|ndt| ndt.and_utc())
+                    .unwrap_or_else(|_| Utc::now());
+                Ok(Webhook {
+                    id: row.get(0)?,
+                    account_id: row.get(1)?,
+                    url: row.get(2)?,
+                    secret: row.get(3)?,
+                    event_types: row.get(4)?,
+                    is_active: row.get(5)?,
+                    created_at: parsed_dt,
+                })
+            })?;
+            for r in rows {
+                webhooks.push(r?);
+            }
+        }
+        Ok(webhooks)
+    }
+
+    /// Delete a webhook by ID.
+    pub fn delete_webhook(&self, id: &str) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let affected = conn.execute("DELETE FROM webhooks WHERE id = ?1", params![id])?;
+        Ok(affected > 0)
+    }
+
     // ─── Utility ─────────────────────────────────────────────
 
     /// Check if a specific table exists in the database.
@@ -1023,6 +1574,12 @@ mod tests {
             "messages",
             "smtp_queue",
             "greylist",
+            "sieve_scripts",
+            "calendars",
+            "calendar_events",
+            "address_books",
+            "contacts",
+            "webhooks",
         ];
         for table in &tables {
             assert!(
@@ -1379,5 +1936,111 @@ mod tests {
         db.delete_sieve_script(&s_id).unwrap();
         let after_del = db.get_sieve_scripts(&a1).unwrap();
         assert!(after_del.is_empty());
+    }
+
+    #[test]
+    fn test_caldav_crud() {
+        let db = setup_db();
+        let t1 = db.insert_tenant("caldav.test").unwrap();
+        let a1 = db
+            .insert_account(&t1, "user", "user@caldav.test", "pass")
+            .unwrap();
+
+        // Auto create default calendar
+        let cal = db.get_or_create_default_calendar(&a1).unwrap();
+        assert_eq!(cal.name, "Personal");
+        let initial_ctag = cal.ctag.clone();
+
+        // Put event
+        let ical = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:event1@caldav.test\r\nSUMMARY:Meeting\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+        let ev = db
+            .put_calendar_event(&cal.id, "event1@caldav.test", ical)
+            .unwrap();
+        assert_eq!(ev.uid, "event1@caldav.test");
+        assert!(ev.etag.starts_with('"'));
+
+        // Check ctag updated
+        let cal_after = db.get_calendar_by_id(&cal.id).unwrap().unwrap();
+        assert_ne!(cal_after.ctag, initial_ctag);
+
+        // Fetch events
+        let events = db.get_calendar_events(&cal.id).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].uid, "event1@caldav.test");
+
+        // Fetch single event
+        let single = db
+            .get_calendar_event_by_uid(&cal.id, "event1@caldav.test")
+            .unwrap();
+        assert!(single.is_some());
+
+        // Delete event
+        let deleted = db
+            .delete_calendar_event(&cal.id, "event1@caldav.test")
+            .unwrap();
+        assert!(deleted);
+        let events_after = db.get_calendar_events(&cal.id).unwrap();
+        assert!(events_after.is_empty());
+    }
+
+    #[test]
+    fn test_carddav_crud() {
+        let db = setup_db();
+        let t1 = db.insert_tenant("carddav.test").unwrap();
+        let a1 = db
+            .insert_account(&t1, "user", "user@carddav.test", "pass")
+            .unwrap();
+
+        // Auto create default address book
+        let book = db.get_or_create_default_address_book(&a1).unwrap();
+        assert_eq!(book.name, "Contacts");
+
+        // Put contact
+        let vcard = "BEGIN:VCARD\r\nVERSION:3.0\r\nFN:John Doe\r\nEMAIL:john@example.com\r\nEND:VCARD\r\n";
+        let contact = db
+            .put_contact(&book.id, "contact1@carddav.test", vcard)
+            .unwrap();
+        assert_eq!(contact.uid, "contact1@carddav.test");
+
+        // Fetch contacts
+        let contacts = db.get_contacts(&book.id).unwrap();
+        assert_eq!(contacts.len(), 1);
+
+        // Fetch single contact
+        let single = db
+            .get_contact_by_uid(&book.id, "contact1@carddav.test")
+            .unwrap();
+        assert!(single.is_some());
+
+        // Delete contact
+        let deleted = db
+            .delete_contact(&book.id, "contact1@carddav.test")
+            .unwrap();
+        assert!(deleted);
+        let contacts_after = db.get_contacts(&book.id).unwrap();
+        assert!(contacts_after.is_empty());
+    }
+
+    #[test]
+    fn test_webhooks_crud() {
+        let db = setup_db();
+        let t1 = db.insert_tenant("hook.test").unwrap();
+        let a1 = db
+            .insert_account(&t1, "user", "user@hook.test", "pass")
+            .unwrap();
+
+        let hook_id = db
+            .insert_webhook(&a1, "https://n8n.test/webhook/email", None, "email.received")
+            .unwrap();
+        assert!(!hook_id.is_empty());
+
+        let hooks = db.list_webhooks(Some(&a1)).unwrap();
+        assert_eq!(hooks.len(), 1);
+        assert_eq!(hooks[0].url, "https://n8n.test/webhook/email");
+
+        let deleted = db.delete_webhook(&hook_id).unwrap();
+        assert!(deleted);
+        let hooks_after = db.list_webhooks(Some(&a1)).unwrap();
+        assert!(hooks_after.is_empty());
     }
 }

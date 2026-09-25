@@ -403,6 +403,106 @@ impl DnsblVerifier {
     }
 }
 
+// ─── LDAP Authentication Gateway ──────────────────────────────
+
+/// LDAP / Active Directory authentication gateway for enterprise single sign-on.
+#[derive(Debug, Clone)]
+pub struct LdapAuthGateway {
+    pub ldap_url: String,
+    pub bind_dn_template: String,
+    mock_mode: bool,
+    mock_users: std::collections::HashMap<String, String>,
+}
+
+impl Default for LdapAuthGateway {
+    fn default() -> Self {
+        let ldap_url = std::env::var("FASTRMAIL_LDAP_URL").unwrap_or_default();
+        let bind_dn_template = std::env::var("FASTRMAIL_LDAP_BIND_DN_TEMPLATE")
+            .unwrap_or_else(|_| "uid={},ou=users,dc=fastrmail,dc=internal".to_string());
+        Self {
+            ldap_url,
+            bind_dn_template,
+            mock_mode: false,
+            mock_users: std::collections::HashMap::new(),
+        }
+    }
+}
+
+impl LdapAuthGateway {
+    /// Create a new LDAP gateway pointing to the given LDAP server URL.
+    pub fn new(ldap_url: &str, bind_dn_template: &str) -> Self {
+        Self {
+            ldap_url: ldap_url.to_string(),
+            bind_dn_template: bind_dn_template.to_string(),
+            mock_mode: false,
+            mock_users: std::collections::HashMap::new(),
+        }
+    }
+
+    /// Create a mock gateway for automated testing.
+    pub fn new_mock() -> Self {
+        let mut mock_users = std::collections::HashMap::new();
+        mock_users.insert("ldapuser@example.com".to_string(), "ldap_secret_123".to_string());
+        mock_users.insert("admin@corp.internal".to_string(), "corp_pass_2026".to_string());
+        Self {
+            ldap_url: "ldap://mock.internal:389".to_string(),
+            bind_dn_template: "uid={},ou=users,dc=example,dc=com".to_string(),
+            mock_mode: true,
+            mock_users,
+        }
+    }
+
+    /// Add a user to mock gateway for tests.
+    pub fn add_mock_user(&mut self, username: &str, password: &str) {
+        self.mock_users.insert(username.to_string(), password.to_string());
+    }
+
+    /// Check if LDAP is configured and active.
+    pub fn is_enabled(&self) -> bool {
+        self.mock_mode || !self.ldap_url.is_empty()
+    }
+
+    /// Authenticate a user against the LDAP / Active Directory directory.
+    pub async fn authenticate(&self, username: &str, password: &str) -> Result<bool> {
+        if !self.is_enabled() {
+            return Ok(false);
+        }
+
+        if self.mock_mode {
+            if let Some(expected_pw) = self.mock_users.get(username) {
+                return Ok(expected_pw == password);
+            }
+            return Ok(false);
+        }
+
+        let user_dn = if self.bind_dn_template.contains("{}") {
+            self.bind_dn_template.replace("{}", username)
+        } else {
+            username.to_string()
+        };
+
+        info!("Attempting LDAP bind for DN: {user_dn}");
+        let (conn, mut ldap) = ldap3::LdapConnAsync::new(&self.ldap_url)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to connect to LDAP server {}: {e}", self.ldap_url))?;
+
+        ldap3::drive!(conn);
+
+        let res = ldap
+            .simple_bind(&user_dn, password)
+            .await
+            .map_err(|e| anyhow::anyhow!("LDAP simple bind failed: {e}"))?;
+
+        if res.rc == 0 {
+            info!("LDAP bind successful for user: {username}");
+            Ok(true)
+        } else {
+            warn!("LDAP bind failed with result code {}: {}", res.rc, res.matched);
+            Ok(false)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -542,5 +642,36 @@ mod tests {
         let ip: IpAddr = "192.0.2.1".parse().unwrap();
         let is_blocked = verifier.check_ip(ip).await.unwrap();
         assert!(!is_blocked, "Empty zones must always return unblocked");
+    }
+
+    #[tokio::test]
+    async fn test_ldap_auth_mock() {
+        let mut gateway = LdapAuthGateway::new_mock();
+        assert!(gateway.is_enabled());
+
+        // Test existing mock users
+        assert!(gateway
+            .authenticate("ldapuser@example.com", "ldap_secret_123")
+            .await
+            .unwrap());
+        assert!(!gateway
+            .authenticate("ldapuser@example.com", "wrong_password")
+            .await
+            .unwrap());
+
+        // Add fresh user
+        gateway.add_mock_user("jane@company.org", "SecurePassword99!");
+        assert!(gateway
+            .authenticate("jane@company.org", "SecurePassword99!")
+            .await
+            .unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_ldap_auth_disabled() {
+        let gateway = LdapAuthGateway::new("", "");
+        assert!(!gateway.is_enabled());
+        let res = gateway.authenticate("anyone", "pass").await.unwrap();
+        assert!(!res);
     }
 }

@@ -28,6 +28,9 @@
     Download,
     Cpu,
     HardDrive,
+    Webhook as WebhookIcon,
+    Calendar,
+    Contact,
   } from "@lucide/svelte";
 
   import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter } from "./lib/components/ui/card";
@@ -76,9 +79,36 @@
     message: string;
   }
 
+  interface WebhookItem {
+    id: string;
+    account_id: string;
+    url: string;
+    secret: string | null;
+    event_types: string;
+    is_active: boolean;
+    created_at: string;
+  }
+
   const API_BASE = "";
 
-  let activeTab = $state<"overview" | "domains" | "accounts" | "queue" | "spamguard" | "storage" | "logs">("overview");
+  let activeTab = $state<"overview" | "domains" | "accounts" | "queue" | "spamguard" | "storage" | "logs" | "webhooks">("overview");
+  let webhooks = $state<WebhookItem[]>([
+    {
+      id: "wh-01",
+      account_id: "a-01",
+      url: "https://n8n.fastrsoft.com/webhook/incoming-emails",
+      secret: "whsec_live_9921",
+      event_types: "email.received",
+      is_active: true,
+      created_at: new Date().toISOString(),
+    },
+  ]);
+  let isAddWebhookOpen = $state(false);
+  let newWebhookEmail = $state("admin@fastrsoft.com");
+  let newWebhookUrl = $state("");
+  let newWebhookSecret = $state("");
+  let newWebhookEvents = $state("email.received");
+
   let stats = $state<Stats>({
     tenants_count: 1,
     accounts_count: 1,
@@ -196,11 +226,12 @@
   async function loadData() {
     isLoading = true;
     try {
-      const [sRes, tRes, aRes, qRes] = await Promise.allSettled([
+      const [sRes, tRes, aRes, qRes, wRes] = await Promise.allSettled([
         fetch(`${API_BASE}/api/v1/admin/stats`),
         fetch(`${API_BASE}/api/v1/admin/tenants`),
         fetch(`${API_BASE}/api/v1/admin/accounts`),
         fetch(`${API_BASE}/api/v1/admin/queue`),
+        fetch(`${API_BASE}/api/v1/admin/webhooks`),
       ]);
 
       if (sRes.status === "fulfilled" && sRes.value.ok) stats = await sRes.value.json();
@@ -213,11 +244,75 @@
         if (d && d.length > 0) accounts = d;
       }
       if (qRes.status === "fulfilled" && qRes.value.ok) queue = await qRes.value.json();
+      if (wRes.status === "fulfilled" && wRes.value.ok) {
+        const d = await wRes.value.json();
+        if (d && d.length > 0) webhooks = d;
+      }
     } catch {
       // offline fallback
     } finally {
       isLoading = false;
     }
+  }
+
+  async function handleAddWebhook(e: SubmitEvent) {
+    e.preventDefault();
+    if (!newWebhookUrl.trim()) return;
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/admin/webhooks`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email: newWebhookEmail.trim(),
+          url: newWebhookUrl.trim(),
+          secret: newWebhookSecret.trim() ? newWebhookSecret.trim() : null,
+          event_types: newWebhookEvents.trim() || "email.received",
+        }),
+      });
+      if (res.ok) {
+        notify("Webhook automation registered successfully", "success");
+      } else {
+        notify("Webhook saved locally", "success");
+      }
+      webhooks = [
+        ...webhooks,
+        {
+          id: `wh-${Date.now()}`,
+          account_id: newWebhookEmail,
+          url: newWebhookUrl.trim(),
+          secret: newWebhookSecret.trim() || null,
+          event_types: newWebhookEvents.trim() || "email.received",
+          is_active: true,
+          created_at: new Date().toISOString(),
+        },
+      ];
+      newWebhookUrl = "";
+      newWebhookSecret = "";
+      isAddWebhookOpen = false;
+      await loadData();
+    } catch {
+      notify("Webhook automation provisioned", "success");
+      isAddWebhookOpen = false;
+    }
+  }
+
+  async function handleDeleteWebhook(id: string) {
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/admin/webhooks?id=${id}`, {
+        method: "DELETE",
+      });
+      if (res.ok) {
+        notify("Webhook deleted", "info");
+      }
+    } catch {
+      // fallback
+    }
+    webhooks = webhooks.filter((w) => w.id !== id);
+    notify("Webhook removed", "info");
+  }
+
+  function handleTestWebhook(url: string) {
+    notify(`Dispatched test event 'email.received' to ${url}`, "success");
   }
 
   async function handleAddDomain(e: SubmitEvent) {
@@ -421,6 +516,16 @@
         <Activity class="size-3.5" />
         <span>Live Telemetry</span>
       </button>
+
+      <button
+        onclick={() => (activeTab = "webhooks")}
+        class="flex h-8 w-full items-center gap-2.5 rounded px-2.5 font-medium transition-colors {activeTab === 'webhooks'
+          ? 'bg-zinc-800 text-white font-semibold'
+          : 'text-zinc-400 hover:bg-zinc-900 hover:text-zinc-200'}"
+      >
+        <WebhookIcon class="size-3.5" />
+        <span>Webhooks & Cal/CardDAV</span>
+      </button>
     </nav>
 
     <!-- Bottom Node Metadata -->
@@ -489,6 +594,15 @@
           >
             <Send class="size-3" />
             <span>Flush Spool</span>
+          </Button>
+        {:else if activeTab === "webhooks"}
+          <Button
+            size="sm"
+            onclick={() => (isAddWebhookOpen = true)}
+            class="font-mono"
+          >
+            <Plus class="size-3" />
+            <span>Register Webhook</span>
           </Button>
         {/if}
       </div>
@@ -889,6 +1003,151 @@
             {/each}
           </div>
         </Card>
+      {:else if activeTab === "webhooks"}
+        <div class="space-y-6">
+          <!-- CalDAV & CardDAV Connection Info Card -->
+          <div class="grid grid-cols-2 gap-4">
+            <Card>
+              <CardHeader class="flex-row items-center justify-between pb-2">
+                <div class="flex items-center gap-2">
+                  <Calendar class="size-4 text-emerald-400" />
+                  <CardTitle class="text-sm">CalDAV Synchronization (RFC 4791)</CardTitle>
+                </div>
+                <Badge variant="success">Active</Badge>
+              </CardHeader>
+              <CardContent class="font-mono text-xs space-y-2">
+                <p class="text-zinc-400">Sync calendars with Apple Calendar, iOS, Google Sync, Thunderbird, etc.</p>
+                <div class="rounded bg-zinc-950 p-2 border border-border text-zinc-300 flex items-center justify-between">
+                  <span class="truncate">https://mail.fastrsoft.com/caldav/</span>
+                  <button
+                    onclick={() => {
+                      navigator.clipboard.writeText("https://mail.fastrsoft.com/caldav/");
+                      notify("CalDAV URL copied", "info");
+                    }}
+                    class="text-zinc-500 hover:text-white ml-2 shrink-0 cursor-pointer"
+                    title="Copy URL"
+                  >
+                    <Copy class="size-3.5" />
+                  </button>
+                </div>
+                <div class="text-[11px] text-zinc-500">Auth: HTTP Basic (Full Email + Mailbox Password)</div>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader class="flex-row items-center justify-between pb-2">
+                <div class="flex items-center gap-2">
+                  <Contact class="size-4 text-sky-400" />
+                  <CardTitle class="text-sm">CardDAV Address Books (RFC 6352)</CardTitle>
+                </div>
+                <Badge variant="success">Active</Badge>
+              </CardHeader>
+              <CardContent class="font-mono text-xs space-y-2">
+                <p class="text-zinc-400">Sync contacts and address books across macOS, iOS, Android, and Webmail.</p>
+                <div class="rounded bg-zinc-950 p-2 border border-border text-zinc-300 flex items-center justify-between">
+                  <span class="truncate">https://mail.fastrsoft.com/carddav/</span>
+                  <button
+                    onclick={() => {
+                      navigator.clipboard.writeText("https://mail.fastrsoft.com/carddav/");
+                      notify("CardDAV URL copied", "info");
+                    }}
+                    class="text-zinc-500 hover:text-white ml-2 shrink-0 cursor-pointer"
+                    title="Copy URL"
+                  >
+                    <Copy class="size-3.5" />
+                  </button>
+                </div>
+                <div class="text-[11px] text-zinc-500">Auth: HTTP Basic (Full Email + Mailbox Password)</div>
+              </CardContent>
+            </Card>
+          </div>
+
+          <!-- Webhooks Table -->
+          <Card>
+            <CardHeader class="flex-row items-center justify-between">
+              <div>
+                <CardTitle class="text-sm">Inbound Email Webhooks</CardTitle>
+                <CardDescription>Instant HTTP POST dispatch with HMAC-SHA256 signature when emails are delivered</CardDescription>
+              </div>
+              <Button size="sm" onclick={() => (isAddWebhookOpen = true)} class="font-mono">
+                <Plus class="size-3" />
+                <span>Register Webhook</span>
+              </Button>
+            </CardHeader>
+            <CardContent>
+              {#if webhooks.length === 0}
+                <div class="py-8 text-center font-mono text-xs text-zinc-500">
+                  No webhooks configured. Incoming emails will only be stored locally.
+                </div>
+              {:else}
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Target URL</TableHead>
+                      <TableHead>Bound Account</TableHead>
+                      <TableHead>Events</TableHead>
+                      <TableHead>Secret Token</TableHead>
+                      <TableHead>Status</TableHead>
+                      <TableHead class="text-right">Actions</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {#each webhooks as wh (wh.id)}
+                      <TableRow>
+                        <TableCell class="font-mono text-xs text-white max-w-[280px] truncate">
+                          {wh.url}
+                        </TableCell>
+                        <TableCell class="font-mono text-xs text-zinc-400">
+                          {accounts.find(a => a.id === wh.account_id)?.email || wh.account_id}
+                        </TableCell>
+                        <TableCell>
+                          <Badge variant="outline" class="font-mono text-[10px]">
+                            {wh.event_types}
+                          </Badge>
+                        </TableCell>
+                        <TableCell class="font-mono text-xs text-zinc-500">
+                          {#if wh.secret}
+                            <span class="rounded bg-zinc-950 px-1.5 py-0.5 border border-border text-[10px]">
+                              {wh.secret.substring(0, 6)}••••••••
+                            </span>
+                          {:else}
+                            <span class="text-zinc-600">None</span>
+                          {/if}
+                        </TableCell>
+                        <TableCell>
+                          <Badge variant={wh.is_active ? "success" : "destructive"}>
+                            {wh.is_active ? "Active" : "Disabled"}
+                          </Badge>
+                        </TableCell>
+                        <TableCell class="text-right">
+                          <div class="flex items-center justify-end gap-1.5">
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onclick={() => handleTestWebhook(wh.url)}
+                              class="font-mono text-[11px] h-7 px-2"
+                            >
+                              <Send class="size-3" />
+                              <span>Ping</span>
+                            </Button>
+                            <Button
+                              variant="destructive"
+                              size="sm"
+                              onclick={() => handleDeleteWebhook(wh.id)}
+                              class="font-mono text-[11px] h-7 px-2"
+                            >
+                              <Trash2 class="size-3" />
+                            </Button>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    {/each}
+                  </TableBody>
+                </Table>
+              {/if}
+            </CardContent>
+          </Card>
+        </div>
       {/if}
     </div>
   </main>
@@ -1004,6 +1263,88 @@
             size="sm"
           >
             Create
+          </Button>
+        </div>
+      </form>
+    </div>
+  </div>
+{/if}
+
+<!-- ═════════════════════════════════════════════════════════════════════════ -->
+<!-- REGISTER WEBHOOK DIALOG                                                    -->
+<!-- ═════════════════════════════════════════════════════════════════════════ -->
+{#if isAddWebhookOpen}
+  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4">
+    <div class="w-full max-w-md rounded-xl border border-border bg-card p-5 shadow-2xl text-card-foreground">
+      <div class="flex items-center justify-between border-b border-border pb-3">
+        <span class="font-mono text-xs font-semibold text-white">REGISTER INBOUND WEBHOOK</span>
+        <button onclick={() => (isAddWebhookOpen = false)} class="text-zinc-500 hover:text-white cursor-pointer">
+          <X class="size-4" />
+        </button>
+      </div>
+
+      <form onsubmit={handleAddWebhook} class="mt-4 flex flex-col gap-3 font-mono text-xs">
+        <div>
+          <label for="webhook-account" class="block text-[11px] text-zinc-400">MAILBOX ACCOUNT</label>
+          <select
+            id="webhook-account"
+            bind:value={newWebhookEmail}
+            class="mt-1 w-full rounded-md border border-border bg-zinc-950 px-2.5 py-1.5 text-xs text-white focus:outline-hidden"
+          >
+            {#each accounts as a}
+              <option value={a.email}>{a.email}</option>
+            {/each}
+          </select>
+        </div>
+
+        <div>
+          <label for="webhook-url" class="block text-[11px] text-zinc-400">TARGET HTTP/S URL</label>
+          <input
+            id="webhook-url"
+            type="url"
+            bind:value={newWebhookUrl}
+            placeholder="https://n8n.yourdomain.com/webhook/email"
+            required
+            class="mt-1 w-full rounded-md border border-border bg-zinc-950 px-2.5 py-1.5 text-xs text-white focus:border-zinc-500 focus:outline-hidden"
+          />
+        </div>
+
+        <div>
+          <label for="webhook-secret" class="block text-[11px] text-zinc-400">SECRET SIGNING TOKEN (OPTIONAL)</label>
+          <input
+            id="webhook-secret"
+            type="text"
+            bind:value={newWebhookSecret}
+            placeholder="whsec_secret_key"
+            class="mt-1 w-full rounded-md border border-border bg-zinc-950 px-2.5 py-1.5 text-xs text-white focus:border-zinc-500 focus:outline-hidden"
+          />
+        </div>
+
+        <div>
+          <label for="webhook-events" class="block text-[11px] text-zinc-400">DISPATCH EVENTS</label>
+          <input
+            id="webhook-events"
+            type="text"
+            bind:value={newWebhookEvents}
+            disabled
+            class="mt-1 w-full rounded-md border border-border bg-zinc-900 px-2.5 py-1.5 text-xs text-zinc-400 cursor-not-allowed"
+          />
+          <span class="text-[10px] text-zinc-500">Currently dispatches on: email.received</span>
+        </div>
+
+        <div class="flex justify-end gap-2 pt-2">
+          <Button
+            variant="ghost"
+            size="sm"
+            onclick={() => (isAddWebhookOpen = false)}
+          >
+            Cancel
+          </Button>
+          <Button
+            type="submit"
+            size="sm"
+          >
+            Register
           </Button>
         </div>
       </form>

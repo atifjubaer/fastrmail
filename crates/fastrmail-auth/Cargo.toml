@@ -15,5 +15,6 @@ hickory-resolver = "0.24"
 tokio = { version = "1", features = ["full"] }
 argon2 = "0.5"
 serde = { version = "1", features = ["derive"] }
+ldap3 = { version = "0.11", default-features = false, features = ["tls-rustls"] }
 anyhow = "1"
 tracing = "0.1"

@@ -185,6 +185,63 @@ pub struct SieveScript {
     pub created_at: DateTime<Utc>,
 }
 
+/// Represents a CalDAV Calendar collection.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Calendar {
+    pub id: String,
+    pub account_id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub color: String,
+    pub ctag: String,
+    pub created_at: DateTime<Utc>,
+}
+
+/// Represents an iCalendar event within a CalDAV Calendar.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CalendarEvent {
+    pub id: String,
+    pub calendar_id: String,
+    pub uid: String,
+    pub ical_data: String,
+    pub etag: String,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Represents a CardDAV Address Book collection.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AddressBook {
+    pub id: String,
+    pub account_id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub ctag: String,
+    pub created_at: DateTime<Utc>,
+}
+
+/// Represents a vCard contact within a CardDAV Address Book.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CardDavContact {
+    pub id: String,
+    pub address_book_id: String,
+    pub uid: String,
+    pub vcard_data: String,
+    pub etag: String,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Represents an inbound email webhook automation trigger (e.g. for n8n/Zapier).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Webhook {
+    pub id: String,
+    pub account_id: String,
+    pub url: String,
+    pub secret: Option<String>,
+    pub event_types: String,
+    pub is_active: bool,
+    pub created_at: DateTime<Utc>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

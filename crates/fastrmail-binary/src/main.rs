@@ -14,8 +14,10 @@ use tower_http::trace::TraceLayer;
 use tracing::info;
 use uuid::Uuid;
 
+mod dav;
+
 use fastrmail_auth::DkimSigner;
-use fastrmail_core::{Account, QueueItem, SystemStats, Tenant};
+use fastrmail_core::{Account, QueueItem, SystemStats, Tenant, Webhook};
 use fastrmail_imap::ImapServer;
 use fastrmail_jmap::{build_jmap_router, JmapState};
 use fastrmail_pop3::Pop3Server;
@@ -155,6 +157,19 @@ pub struct GenerateDkimResponse {
 #[derive(Debug, Serialize)]
 pub struct ErrorResponse {
     pub error: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateWebhookRequest {
+    pub email: String,
+    pub url: String,
+    pub secret: Option<String>,
+    pub event_types: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DeleteWebhookQuery {
+    pub id: String,
 }
 
 // ─── Helpers ─────────────────────────────────────────────────
@@ -810,9 +825,90 @@ async fn list_admin_queue(
     Ok(Json(items))
 }
 
+/// GET /api/v1/admin/webhooks — List all webhook subscriptions.
+async fn list_admin_webhooks(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<Vec<Webhook>>, (StatusCode, Json<ErrorResponse>)> {
+    let hooks = state.db.list_webhooks(None).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Failed to list webhooks: {e}"),
+            }),
+        )
+    })?;
+    Ok(Json(hooks))
+}
+
+/// POST /api/v1/admin/webhooks — Create a new webhook trigger.
+async fn create_admin_webhook(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<CreateWebhookRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorResponse>)> {
+    let account = match state.db.get_account_by_email(&payload.email).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Database error: {e}"),
+            }),
+        )
+    })? {
+        Some(a) => a,
+        None => {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: format!("Account not found: {}", payload.email),
+                }),
+            ));
+        }
+    };
+
+    let events = payload
+        .event_types
+        .unwrap_or_else(|| "email.received".to_string());
+    let id = state
+        .db
+        .insert_webhook(&account.id, &payload.url, payload.secret.as_deref(), &events)
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Failed to insert webhook: {e}"),
+                }),
+            )
+        })?;
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "webhook_id": id,
+        "email": payload.email,
+        "url": payload.url
+    })))
+}
+
+/// DELETE /api/v1/admin/webhooks — Delete a webhook subscription by ID.
+async fn delete_admin_webhook(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<DeleteWebhookQuery>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorResponse>)> {
+    let success = state.db.delete_webhook(&query.id).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Failed to delete webhook: {e}"),
+            }),
+        )
+    })?;
+
+    Ok(Json(serde_json::json!({
+        "success": success
+    })))
+}
+
 // ─── Router Builder ──────────────────────────────────────────
 
-/// Build the Axum router with all public, webmail, admin, and JMAP RFC 8620/8621 routes.
+/// Build the Axum router with all public, webmail, admin, JMAP, and CalDAV/CardDAV routes.
 pub fn build_router(state: Arc<AppState>) -> Router {
     let jmap_state = JmapState {
         db: Arc::clone(&state.db),
@@ -850,10 +946,17 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         )
         .route("/api/v1/admin/dkim/generate", post(generate_dkim_handler))
         .route("/api/v1/admin/queue", get(list_admin_queue))
+        .route(
+            "/api/v1/admin/webhooks",
+            get(list_admin_webhooks)
+                .post(create_admin_webhook)
+                .delete(delete_admin_webhook),
+        )
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
-        .with_state(state)
-        .merge(build_jmap_router(jmap_state));
+        .with_state(state.clone())
+        .merge(build_jmap_router(jmap_state))
+        .merge(dav::build_dav_router(state));
 
     if std::path::Path::new("web/admin/dist").exists() {
         router = router.nest_service("/admin", ServeDir::new("web/admin/dist"));
@@ -883,6 +986,22 @@ pub fn handle_generate_dkim(db: &Database, domain: &str) -> anyhow::Result<Strin
     Ok(record)
 }
 
+/// Register a webhook via CLI, auto-creating default tenant and account if needed.
+pub fn handle_add_webhook(db: &Database, email: &str, url: &str) -> anyhow::Result<String> {
+    let account = match db.get_account_by_email(email)? {
+        Some(a) => a,
+        None => {
+            let (tenant, _) = get_or_create_default_account(db)?;
+            let username = email.split('@').next().unwrap_or("user");
+            let _id = db.insert_account(&tenant.id, username, email, "admin123")?;
+            db.get_account_by_email(email)?.unwrap()
+        }
+    };
+
+    let hook_id = db.insert_webhook(&account.id, url, None, "email.received")?;
+    Ok(hook_id)
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
@@ -901,6 +1020,45 @@ async fn main() -> anyhow::Result<()> {
 
         println!("Add this TXT record to your DNS:");
         println!("{record}");
+        return Ok(());
+    }
+
+    // Check for CLI argument: fastrmail --add-webhook <email> <url>
+    if let Some(pos) = args.iter().position(|arg| arg == "--add-webhook") {
+        let email = args
+            .get(pos + 1)
+            .map(|s| s.as_str())
+            .unwrap_or("postmaster@localhost");
+        let url = args
+            .get(pos + 2)
+            .map(|s| s.as_str())
+            .unwrap_or("http://127.0.0.1:5678/webhook");
+
+        let db = Database::new("data/fastrmail.db")?;
+        db.init_schema()?;
+
+        let hook_id = handle_add_webhook(&db, email, url)?;
+        println!("Registered webhook: id={hook_id} email={email} url={url}");
+        return Ok(());
+    }
+
+    // Check for CLI argument: fastrmail --list-webhooks
+    if args.iter().any(|arg| arg == "--list-webhooks") {
+        let db = Database::new("data/fastrmail.db")?;
+        db.init_schema()?;
+
+        let hooks = db.list_webhooks(None)?;
+        println!(
+            "{:<36} {:<24} {:<16} {:<40}",
+            "ID", "ACCOUNT_ID", "EVENTS", "URL"
+        );
+        println!("{}", "-".repeat(118));
+        for h in hooks {
+            println!(
+                "{:<36} {:<24} {:<16} {:<40}",
+                h.id, h.account_id, h.event_types, h.url
+            );
+        }
         return Ok(());
     }
 
@@ -1014,6 +1172,7 @@ async fn main() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::Engine;
 
     fn setup_test_state() -> Arc<AppState> {
         let db = Database::new_memory().expect("Failed to create in-memory DB");
@@ -1181,6 +1340,168 @@ mod tests {
         assert!(response.starts_with("HTTP/1.1 200 OK"));
         assert!(response.contains("urn:ietf:params:jmap:core"));
         assert!(response.contains("urn:ietf:params:jmap:mail"));
+
+        let _ = std::fs::remove_dir_all(&state.data_dir);
+    }
+
+    #[test]
+    fn test_cli_add_webhook() {
+        let db = Database::new_memory().unwrap();
+        db.init_schema().unwrap();
+
+        let hook_id = handle_add_webhook(&db, "test@hook.local", "https://automation.io/hook").unwrap();
+        assert!(!hook_id.is_empty());
+
+        let hooks = db.list_webhooks(None).unwrap();
+        assert_eq!(hooks.len(), 1);
+        assert_eq!(hooks[0].url, "https://automation.io/hook");
+    }
+
+    #[tokio::test]
+    async fn test_admin_webhook_api() {
+        let state = setup_test_state();
+
+        // 1. Create a tenant and account
+        let t_id = state.db.insert_tenant("hookcorp.org").unwrap();
+        state
+            .db
+            .insert_account(&t_id, "admin", "admin@hookcorp.org", "pass123")
+            .unwrap();
+
+        // 2. Add webhook via API handler
+        let create_res = create_admin_webhook(
+            State(state.clone()),
+            Json(CreateWebhookRequest {
+                email: "admin@hookcorp.org".to_string(),
+                url: "https://n8n.internal/webhook/email".to_string(),
+                secret: Some("test_secret".to_string()),
+                event_types: Some("email.received".to_string()),
+            }),
+        )
+        .await
+        .unwrap();
+
+        let hook_id = create_res.0["webhook_id"].as_str().unwrap().to_string();
+        assert!(!hook_id.is_empty());
+
+        // 3. List webhooks
+        let list_res = list_admin_webhooks(State(state.clone())).await.unwrap();
+        assert_eq!(list_res.0.len(), 1);
+        assert_eq!(list_res.0[0].url, "https://n8n.internal/webhook/email");
+
+        // 4. Delete webhook
+        let del_res = delete_admin_webhook(
+            State(state.clone()),
+            Query(DeleteWebhookQuery { id: hook_id }),
+        )
+        .await
+        .unwrap();
+        assert!(del_res.0["success"].as_bool().unwrap());
+
+        let list_after = list_admin_webhooks(State(state.clone())).await.unwrap();
+        assert!(list_after.0.is_empty());
+
+        let _ = std::fs::remove_dir_all(&state.data_dir);
+    }
+
+    #[tokio::test]
+    async fn test_caldav_and_carddav_integration() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let state = setup_test_state();
+        let _ = get_or_create_default_account(&state.db).unwrap();
+        let app = build_router(state.clone());
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        // 1. Test .well-known/caldav discovery redirect
+        let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let req = format!(
+            "GET /.well-known/caldav HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
+            addr
+        );
+        stream.write_all(req.as_bytes()).await.unwrap();
+        let mut resp = String::new();
+        stream.read_to_string(&mut resp).await.unwrap();
+        assert!(resp.starts_with("HTTP/1.1 301") || resp.starts_with("HTTP/1.1 307") || resp.contains("location: /caldav/"));
+
+        // 2. Test OPTIONS /caldav/
+        let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let req = format!(
+            "OPTIONS /caldav/ HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
+            addr
+        );
+        stream.write_all(req.as_bytes()).await.unwrap();
+        let mut resp = String::new();
+        stream.read_to_string(&mut resp).await.unwrap();
+        assert!(resp.starts_with("HTTP/1.1 200 OK"));
+        assert!(resp.to_lowercase().contains("calendar-access"));
+
+        // 3. Test PROPFIND /caldav/ with Basic auth for default user (postmaster@localhost / admin123)
+        let basic_auth = base64::engine::general_purpose::STANDARD.encode("postmaster@localhost:admin123");
+        let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let req = format!(
+            "PROPFIND /caldav/ HTTP/1.1\r\nHost: {}\r\nAuthorization: Basic {}\r\nConnection: close\r\n\r\n",
+            addr, basic_auth
+        );
+        stream.write_all(req.as_bytes()).await.unwrap();
+        let mut resp = String::new();
+        stream.read_to_string(&mut resp).await.unwrap();
+        assert!(resp.starts_with("HTTP/1.1 207 Multi-Status"));
+        assert!(resp.contains("<D:current-user-principal>"));
+
+        // 4. Test PUT /caldav/postmaster/personal/event1.ics
+        let ical_body = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:event1\r\nSUMMARY:Team Standup\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+        let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let req = format!(
+            "PUT /caldav/postmaster/personal/event1.ics HTTP/1.1\r\nHost: {}\r\nAuthorization: Basic {}\r\nContent-Type: text/calendar\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            addr, basic_auth, ical_body.len(), ical_body
+        );
+        stream.write_all(req.as_bytes()).await.unwrap();
+        let mut resp = String::new();
+        stream.read_to_string(&mut resp).await.unwrap();
+        assert!(resp.starts_with("HTTP/1.1 201 Created") || resp.starts_with("HTTP/1.1 204"));
+
+        // 5. Test GET /caldav/postmaster/personal/event1.ics
+        let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let req = format!(
+            "GET /caldav/postmaster/personal/event1.ics HTTP/1.1\r\nHost: {}\r\nAuthorization: Basic {}\r\nConnection: close\r\n\r\n",
+            addr, basic_auth
+        );
+        stream.write_all(req.as_bytes()).await.unwrap();
+        let mut resp = String::new();
+        stream.read_to_string(&mut resp).await.unwrap();
+        assert!(resp.starts_with("HTTP/1.1 200 OK"));
+        assert!(resp.contains("SUMMARY:Team Standup"));
+
+        // 6. Test PUT /carddav/postmaster/contacts/contact1.vcf
+        let vcard_body = "BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Alice Smith\r\nEMAIL:alice@example.com\r\nEND:VCARD\r\n";
+        let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let req = format!(
+            "PUT /carddav/postmaster/contacts/contact1.vcf HTTP/1.1\r\nHost: {}\r\nAuthorization: Basic {}\r\nContent-Type: text/vcard\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            addr, basic_auth, vcard_body.len(), vcard_body
+        );
+        stream.write_all(req.as_bytes()).await.unwrap();
+        let mut resp = String::new();
+        stream.read_to_string(&mut resp).await.unwrap();
+        assert!(resp.starts_with("HTTP/1.1 201 Created") || resp.starts_with("HTTP/1.1 204"));
+
+        // 7. Test GET /carddav/postmaster/contacts/contact1.vcf
+        let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let req = format!(
+            "GET /carddav/postmaster/contacts/contact1.vcf HTTP/1.1\r\nHost: {}\r\nAuthorization: Basic {}\r\nConnection: close\r\n\r\n",
+            addr, basic_auth
+        );
+        stream.write_all(req.as_bytes()).await.unwrap();
+        let mut resp = String::new();
+        stream.read_to_string(&mut resp).await.unwrap();
+        assert!(resp.starts_with("HTTP/1.1 200 OK"));
+        assert!(resp.contains("FN:Alice Smith"));
 
         let _ = std::fs::remove_dir_all(&state.data_dir);
     }

@@ -10,11 +10,11 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 use fastrmail_auth::{DkimVerifier, DmarcEvaluator, DnsblVerifier, SpfVerifier};
-use fastrmail_core::Message;
+use fastrmail_core::{Message, Webhook};
 use fastrmail_search::SearchEngine;
 use fastrmail_store::Database;
 use mail_parser::MessageParser;
@@ -705,6 +705,37 @@ async fn handle_connection(
                 }
             }
 
+            // Trigger Inbound Webhooks
+            if let Ok(webhooks) = db.list_webhooks(Some(&account_id)) {
+                let active_webhooks: Vec<_> = webhooks
+                    .into_iter()
+                    .filter(|w| {
+                        w.is_active
+                            && (w.event_types.contains("email.received")
+                                || w.event_types == "*")
+                    })
+                    .collect();
+                if !active_webhooks.is_empty() {
+                    let snippet = if plain_body.len() > 200 {
+                        format!("{}...", &plain_body[..200])
+                    } else {
+                        plain_body.clone()
+                    };
+                    let payload = serde_json::json!({
+                        "event": "email.received",
+                        "account_id": account_id,
+                        "message_id": msg_id,
+                        "from": from.clone().unwrap_or_default(),
+                        "to": to.clone().unwrap_or_default(),
+                        "subject": subject.clone().unwrap_or_default(),
+                        "size_bytes": size_bytes,
+                        "date": chrono::Utc::now().to_rfc3339(),
+                        "body_snippet": snippet
+                    });
+                    dispatch_webhooks(active_webhooks, payload);
+                }
+            }
+
             info!(
                 "Message saved: blob={blob_id} from={} to={} subject={}",
                 from.as_deref().unwrap_or("?"),
@@ -732,6 +763,71 @@ async fn handle_connection(
     }
 
     Ok(())
+}
+
+/// Dispatch an inbound email event to registered webhooks with exponential backoff retry.
+pub fn dispatch_webhooks(webhooks: Vec<Webhook>, payload: serde_json::Value) {
+    tokio::spawn(async move {
+        let client = match reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+        {
+            Ok(c) => c,
+            Err(e) => {
+                warn!("Failed to build reqwest client for webhooks: {e}");
+                return;
+            }
+        };
+
+        for hook in webhooks {
+            if !hook.is_active {
+                continue;
+            }
+            let url = hook.url.clone();
+            let payload = payload.clone();
+            let client = client.clone();
+            let secret = hook.secret.clone();
+
+            tokio::spawn(async move {
+                let backoffs = [1, 2, 4];
+                let mut delivered = false;
+                for (attempt, delay) in backoffs.iter().enumerate() {
+                    debug!("Webhook dispatch attempt {} to {}", attempt + 1, url);
+                    let mut req = client.post(&url).json(&payload);
+                    if let Some(ref sec) = secret {
+                        req = req.header("X-Webhook-Secret", sec);
+                    }
+                    match req.send().await {
+                        Ok(resp) if resp.status().is_success() => {
+                            info!(
+                                "Webhook delivered successfully to {url} (status: {})",
+                                resp.status()
+                            );
+                            delivered = true;
+                            break;
+                        }
+                        Ok(resp) => {
+                            warn!(
+                                "Webhook delivery to {url} returned HTTP {}: attempt {}",
+                                resp.status(),
+                                attempt + 1
+                            );
+                        }
+                        Err(e) => {
+                            warn!(
+                                "Webhook delivery to {url} failed: {e}: attempt {}",
+                                attempt + 1
+                            );
+                        }
+                    }
+                    tokio::time::sleep(tokio::time::Duration::from_secs(*delay)).await;
+                }
+                if !delivered {
+                    warn!("Webhook delivery permanently failed to {url} after 3 attempts");
+                }
+            });
+        }
+    });
 }
 
 #[cfg(test)]
@@ -1567,5 +1663,53 @@ mod tests {
         }
 
         std::fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[tokio::test]
+    async fn test_inbound_webhook_dispatch_e2e() {
+        // Spin up a mock HTTP server to receive the webhook
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let mock_url = format!("http://127.0.0.1:{port}/webhook");
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+
+        tokio::spawn(async move {
+            if let Ok((mut stream, _)) = listener.accept().await {
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                let mut buf = vec![0u8; 4096];
+                let n = stream.read(&mut buf).await.unwrap_or(0);
+                let req_text = String::from_utf8_lossy(&buf[..n]).to_string();
+                let _ = stream
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK")
+                    .await;
+                let _ = tx.send(req_text).await;
+            }
+        });
+
+        let webhook = Webhook {
+            id: "wh_test".to_string(),
+            account_id: "acc_test".to_string(),
+            url: mock_url,
+            secret: Some("secret123".to_string()),
+            event_types: "email.received".to_string(),
+            is_active: true,
+            created_at: chrono::Utc::now(),
+        };
+
+        let payload = serde_json::json!({
+            "event": "email.received",
+            "account_id": "acc_test",
+            "from": "sender@test.org",
+            "subject": "Webhook Test Subject"
+        });
+
+        dispatch_webhooks(vec![webhook], payload);
+
+        let received = tokio::time::timeout(std::time::Duration::from_secs(3), rx.recv()).await;
+        assert!(received.is_ok(), "Webhook listener timed out");
+        let req_body = received.unwrap().expect("Must receive request");
+        assert!(req_body.to_lowercase().contains("x-webhook-secret: secret123"));
+        assert!(req_body.contains("Webhook Test Subject"));
     }
 }
