@@ -333,7 +333,7 @@
   });
 </script>
 
-<div class="flex h-screen w-screen overflow-hidden bg-background font-sans text-foreground antialiased select-none">
+<div class="flex h-screen w-screen overflow-hidden bg-background font-sans text-foreground antialiased select-text">
   <!-- ═════════════════════════════════════════════════════════════════════════ -->
   <!-- 1. STALWART-STYLE MINIMALIST DARK SIDEBAR                                 -->
   <!-- ═════════════════════════════════════════════════════════════════════════ -->

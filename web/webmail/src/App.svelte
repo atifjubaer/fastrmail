@@ -505,7 +505,7 @@
   });
 </script>
 
-<div class="flex h-screen w-screen flex-col overflow-hidden bg-zinc-100 font-sans text-zinc-900 antialiased select-none dark:bg-zinc-950 dark:text-zinc-100">
+<div class="flex h-screen w-screen flex-col overflow-hidden bg-zinc-100 font-sans text-zinc-900 antialiased dark:bg-zinc-950 dark:text-zinc-100 select-text">
   <!-- ═════════════════════════════════════════════════════════════════════════ -->
   <!-- 1. SNAPPYMAIL TOP APPLICATION BAR                                         -->
   <!-- ═════════════════════════════════════════════════════════════════════════ -->
