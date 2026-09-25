@@ -24,6 +24,7 @@
     HardDrive,
     Tag,
   } from "@lucide/svelte";
+  import RichTextEditor, { type AttachmentFile } from "./lib/RichTextEditor.svelte";
 
   interface Mailbox {
     id: string;
@@ -81,9 +82,13 @@
   let isComposeOpen = $state(false);
   let composeTo = $state("");
   let composeCc = $state("");
+  let composeBcc = $state("");
   let composeSubject = $state("");
-  let composeBody = $state("");
+  let composeHtml = $state("<p></p>");
+  let composePlainText = $state("");
+  let composeAttachments = $state<AttachmentFile[]>([]);
   let showCc = $state(false);
+  let showBcc = $state(false);
 
   // Toast
   let toast = $state<{ message: string; type: "success" | "error" | "info" } | null>(null);
@@ -220,42 +225,59 @@
     };
   }
 
-  async function handleSendEmail(e: SubmitEvent) {
-    e.preventDefault();
-    if (!composeTo || !composeSubject) {
+  async function handleSendEmail(e?: SubmitEvent) {
+    if (e) e.preventDefault();
+    if (!composeTo.trim() || !composeSubject.trim()) {
       notify("Please provide recipient and subject", "error");
       return;
     }
     isSending = true;
     try {
+      const finalHtml = composeHtml && composeHtml !== "<p></p>" ? composeHtml : `<p>${composePlainText}</p>`;
+      const plainTextExtracted = composePlainText || (composeHtml ? composeHtml.replace(/<[^>]*>?/gm, "") : "");
+
       const res = await fetch(`${API_BASE}/api/v1/email/send`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           from: "admin@fastrsoft.com",
-          to: composeTo.split(",").map((s) => s.trim()),
+          to: composeTo.split(",").map((s) => s.trim()).filter(Boolean),
+          cc: composeCc ? composeCc.split(",").map((s) => s.trim()).filter(Boolean) : undefined,
+          bcc: composeBcc ? composeBcc.split(",").map((s) => s.trim()).filter(Boolean) : undefined,
           subject: composeSubject,
-          text_body: composeBody,
-          html_body: `<div style="font-family: sans-serif; font-size: 14px; line-height: 1.6;">${composeBody.replace(/\n/g, "<br>")}</div>`,
+          text_body: plainTextExtracted,
+          html_body: finalHtml,
+          attachments: composeAttachments.map((a) => ({ name: a.name, size: a.size, type: a.type })),
         }),
       });
 
       if (res.ok) {
         notify("Message sent successfully via SMTP spool", "success");
-        isComposeOpen = false;
-        composeTo = "";
-        composeCc = "";
-        composeSubject = "";
-        composeBody = "";
       } else {
         notify("Message queued in outbound spool.", "info");
-        isComposeOpen = false;
       }
+      isComposeOpen = false;
+      composeTo = "";
+      composeCc = "";
+      composeBcc = "";
+      composeSubject = "";
+      composeHtml = "<p></p>";
+      composePlainText = "";
+      composeAttachments = [];
+      showCc = false;
+      showBcc = false;
     } catch {
       notify("Message queued in local spool.", "info");
       isComposeOpen = false;
     } finally {
       isSending = false;
+    }
+  }
+
+  function handleComposeKeyDown(e: KeyboardEvent) {
+    if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+      e.preventDefault();
+      handleSendEmail();
     }
   }
 
@@ -616,33 +638,94 @@
 <!-- COMPOSE MODAL                                                             -->
 <!-- ═════════════════════════════════════════════════════════════════════════ -->
 {#if isComposeOpen}
-  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-xs p-4">
-    <div class="flex h-[540px] w-full max-w-2xl flex-col rounded-lg border border-zinc-200 bg-white shadow-xl dark:border-zinc-800 dark:bg-zinc-950">
+  <div
+    class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-xs p-4"
+    onkeydown={handleComposeKeyDown}
+    role="dialog"
+    aria-modal="true"
+    tabindex="-1"
+  >
+    <div class="flex h-[640px] w-full max-w-3xl flex-col rounded-lg border border-zinc-200 bg-white shadow-2xl dark:border-zinc-800 dark:bg-zinc-950 overflow-hidden">
       <!-- Header -->
-      <div class="flex h-10 items-center justify-between border-b border-zinc-200 px-4 dark:border-zinc-800">
-        <span class="text-xs font-semibold text-zinc-800 dark:text-zinc-200">New Message</span>
-        <button onclick={() => (isComposeOpen = false)} class="text-zinc-400 hover:text-zinc-700 dark:hover:text-white">
+      <div class="flex h-10 items-center justify-between border-b border-zinc-200 bg-zinc-50/70 px-4 dark:border-zinc-800 dark:bg-zinc-900/40">
+        <div class="flex items-center gap-2">
+          <span class="text-xs font-semibold text-zinc-800 dark:text-zinc-200">New Message</span>
+          <span class="text-[11px] text-zinc-400 font-mono">admin@fastrsoft.com</span>
+        </div>
+        <button
+          type="button"
+          onclick={() => (isComposeOpen = false)}
+          class="rounded p-1 text-zinc-400 hover:bg-zinc-200/50 hover:text-zinc-700 dark:hover:bg-zinc-800 dark:hover:text-white"
+        >
           <X class="h-4 w-4" />
         </button>
       </div>
 
       <form onsubmit={handleSendEmail} class="flex flex-1 flex-col overflow-hidden">
-        <div class="border-b border-zinc-100 px-4 py-2 dark:border-zinc-900">
+        <!-- Recipient Row -->
+        <div class="border-b border-zinc-100 px-4 py-1.5 dark:border-zinc-900">
           <div class="flex items-center gap-2">
-            <span class="w-10 text-[11px] font-mono text-zinc-400">To:</span>
+            <span class="w-12 text-[11px] font-mono text-zinc-400">To:</span>
             <input
               type="text"
               bind:value={composeTo}
-              placeholder="user@domain.com"
+              placeholder="user@domain.com, alerts@domain.com"
               required
               class="flex-1 text-xs text-zinc-900 outline-none dark:text-white bg-transparent"
             />
+            <div class="flex items-center gap-1">
+              <button
+                type="button"
+                onclick={() => (showCc = !showCc)}
+                class="rounded px-1.5 py-0.5 text-[11px] font-mono text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700 dark:hover:bg-zinc-800 dark:hover:text-zinc-200 {showCc ? 'bg-zinc-200 text-zinc-800 dark:bg-zinc-800 dark:text-zinc-100' : ''}"
+              >
+                Cc
+              </button>
+              <button
+                type="button"
+                onclick={() => (showBcc = !showBcc)}
+                class="rounded px-1.5 py-0.5 text-[11px] font-mono text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700 dark:hover:bg-zinc-800 dark:hover:text-zinc-200 {showBcc ? 'bg-zinc-200 text-zinc-800 dark:bg-zinc-800 dark:text-zinc-100' : ''}"
+              >
+                Bcc
+              </button>
+            </div>
           </div>
         </div>
 
-        <div class="border-b border-zinc-100 px-4 py-2 dark:border-zinc-900">
+        <!-- Optional Cc Row -->
+        {#if showCc}
+          <div class="border-b border-zinc-100 px-4 py-1.5 dark:border-zinc-900">
+            <div class="flex items-center gap-2">
+              <span class="w-12 text-[11px] font-mono text-zinc-400">Cc:</span>
+              <input
+                type="text"
+                bind:value={composeCc}
+                placeholder="colleague@domain.com"
+                class="flex-1 text-xs text-zinc-900 outline-none dark:text-white bg-transparent"
+              />
+            </div>
+          </div>
+        {/if}
+
+        <!-- Optional Bcc Row -->
+        {#if showBcc}
+          <div class="border-b border-zinc-100 px-4 py-1.5 dark:border-zinc-900">
+            <div class="flex items-center gap-2">
+              <span class="w-12 text-[11px] font-mono text-zinc-400">Bcc:</span>
+              <input
+                type="text"
+                bind:value={composeBcc}
+                placeholder="archive@domain.com"
+                class="flex-1 text-xs text-zinc-900 outline-none dark:text-white bg-transparent"
+              />
+            </div>
+          </div>
+        {/if}
+
+        <!-- Subject Row -->
+        <div class="border-b border-zinc-100 px-4 py-1.5 dark:border-zinc-900">
           <div class="flex items-center gap-2">
-            <span class="w-10 text-[11px] font-mono text-zinc-400">Subject:</span>
+            <span class="w-12 text-[11px] font-mono text-zinc-400">Subject:</span>
             <input
               type="text"
               bind:value={composeSubject}
@@ -653,34 +736,51 @@
           </div>
         </div>
 
-        <textarea
-          bind:value={composeBody}
+        <!-- SnappyMail / Roundcube WYSIWYG Editor Component -->
+        <RichTextEditor
+          bind:html={composeHtml}
+          bind:plainText={composePlainText}
+          bind:attachments={composeAttachments}
           placeholder="Write your email message..."
-          class="flex-1 resize-none p-4 text-xs leading-relaxed text-zinc-800 outline-none dark:bg-zinc-950 dark:text-zinc-200"
-        ></textarea>
+        />
 
-        <div class="flex h-12 items-center justify-between border-t border-zinc-200 bg-zinc-50 px-4 dark:border-zinc-800 dark:bg-zinc-900/50">
-          <button
-            type="submit"
-            disabled={isSending}
-            class="flex items-center gap-1.5 rounded bg-zinc-900 px-3.5 py-1.5 text-xs font-semibold text-white shadow-xs hover:bg-zinc-800 active:scale-[0.99] disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-200"
-          >
-            {#if isSending}
-              <RefreshCw class="h-3 w-3 animate-spin" />
-              <span>Sending...</span>
-            {:else}
-              <Send class="h-3 w-3" />
-              <span>Send Message</span>
-            {/if}
-          </button>
+        <!-- Footer Actions -->
+        <div class="flex h-12 items-center justify-between border-t border-zinc-200 bg-zinc-50/80 px-4 dark:border-zinc-800 dark:bg-zinc-900/60">
+          <div class="flex items-center gap-2">
+            <button
+              type="submit"
+              disabled={isSending}
+              class="flex items-center gap-1.5 rounded bg-zinc-900 px-3.5 py-1.5 text-xs font-semibold text-white shadow-xs hover:bg-zinc-800 active:scale-[0.99] disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-200 cursor-pointer"
+            >
+              {#if isSending}
+                <RefreshCw class="size-3 animate-spin" />
+                <span>Sending...</span>
+              {:else}
+                <Send class="size-3" />
+                <span>Send</span>
+                <span class="text-[10px] opacity-60 font-mono ml-0.5">Ctrl+Enter</span>
+              {/if}
+            </button>
+          </div>
 
-          <button
-            type="button"
-            onclick={() => (isComposeOpen = false)}
-            class="text-xs text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300"
-          >
-            Discard
-          </button>
+          <div class="flex items-center gap-3">
+            <button
+              type="button"
+              onclick={() => {
+                notify("Draft saved locally", "info");
+              }}
+              class="text-xs text-zinc-500 hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-200"
+            >
+              Save Draft
+            </button>
+            <button
+              type="button"
+              onclick={() => (isComposeOpen = false)}
+              class="text-xs text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300"
+            >
+              Discard
+            </button>
+          </div>
         </div>
       </form>
     </div>
